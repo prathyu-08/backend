@@ -5,7 +5,11 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 
 # App
-app = FastAPI()
+app = FastAPI(title="Recruitment Management Portal")
+
+models.Base.metadata.create_all(bind=engine)
+
+app.include_router(auth_router)
 
 # Security
 SECRET_KEY = "secret123"
@@ -13,21 +17,9 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-# Fake database
-users_db = {
-    "admin": {
-        "username": "admin",
-        "password": pwd_context.hash("admin123"),
-        "role": "admin"
-    },
-    "user": {
-        "username": "user",
-        "password": pwd_context.hash("user123"),
-        "role": "user"
-    }
-}
+
 
 # Password verify
 def verify_password(plain, hashed):
@@ -68,9 +60,9 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # Admin route
-@app.get("/admin")
+@app.get("/recruiter")
 def admin_dashboard(user=Depends(get_current_user)):
-    if user["role"] != "admin":
+    if user["role"] != "rectuiter":
         raise HTTPException(status_code=403, detail="Access denied")
     return {"message": "Welcome Admin"}
 
@@ -82,3 +74,4 @@ def user_dashboard(user=Depends(get_current_user)):
 @app.get("/")
 def home():
     return {"message": "API is running"}
+
