@@ -1,67 +1,60 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.db import get_db
-from app import models, schemas
-from app.utils.security import hash_password
 
+from app.db import get_db
+from app.schemas import UserRegister, RecruiterRegister
+from app.models import User, Recruiter, UserRole
+from app.security import hash_password
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# ------------------ USER REGISTRATION ------------------
+
 @router.post("/register")
-def register_user(data: schemas.UserRegister, db: Session = Depends(get_db)):
-
-    existing_user = db.query(models.User).filter(
-        (models.User.username == data.username) |
-        (models.User.email == data.email)
-    ).first()
-
-    if existing_user:
+def register_user(data: UserRegister, db: Session = Depends(get_db)):
+    if db.query(User).filter(
+        (User.username == data.username) |
+        (User.email == data.email)
+    ).first():
         raise HTTPException(status_code=400, detail="User already exists")
 
-    user = models.User(
+    user = User(
         username=data.username,
         full_name=data.full_name,
         email=data.email,
         phone_number=data.phone_number,
         hashed_password=hash_password(data.password),
-        role=data.role,
-        is_verified=False
+        role=data.role
     )
 
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    return {"message": "User registered successfully", "user_id": user.id}
+    return {"message": "User registered successfully"}
 
-# ------------------ HR / RECRUITER REGISTRATION ------------------
+
 @router.post("/register/recruiter")
-def register_recruiter(data: schemas.RecruiterRegister, db: Session = Depends(get_db)):
-
-    existing_user = db.query(models.User).filter(
-        (models.User.username == data.username) |
-        (models.User.email == data.email)
-    ).first()
-
-    if existing_user:
+def register_recruiter(data: RecruiterRegister, db: Session = Depends(get_db)):
+    if db.query(User).filter(
+        (User.username == data.username) |
+        (User.email == data.email)
+    ).first():
         raise HTTPException(status_code=400, detail="User already exists")
 
-    user = models.User(
+    user = User(
         username=data.username,
         full_name=data.full_name,
         email=data.email,
         phone_number=data.phone_number,
         hashed_password=hash_password(data.password),
-        role=models.UserRole.recruiter,
-        is_verified=False
+        role=UserRole.recruiter
     )
 
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    recruiter = models.Recruiter(
+    recruiter = Recruiter(
         user_id=user.id,
         company_name=data.company_name,
         company_website=data.company_website,
@@ -72,4 +65,4 @@ def register_recruiter(data: schemas.RecruiterRegister, db: Session = Depends(ge
     db.add(recruiter)
     db.commit()
 
-    return {"message": "Recruiter registered successfully", "user_id": user.id}
+    return {"message": "Recruiter registered successfully"}
