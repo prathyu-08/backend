@@ -1,5 +1,4 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
 from enum import Enum
 
 class UserRole(str, Enum):
@@ -7,7 +6,6 @@ class UserRole(str, Enum):
     recruiter = "recruiter"
     candidate = "user"
 
-# ------------------ COMMON user ------------------
 class UserRegister(BaseModel):
     username: str
     full_name: str
@@ -16,7 +14,6 @@ class UserRegister(BaseModel):
     password: str
     role: UserRole
 
-# ------------------ RECRUITER ------------------
 class RecruiterRegister(BaseModel):
     username: str
     full_name: str
