@@ -19,7 +19,9 @@ from sqlalchemy.dialects.postgresql import UUID
 from app.db import Base
 
 
+# =====================================================
 # ENUMS
+# =====================================================
 
 class UserRole(str, enum.Enum):
     user = "user"
@@ -47,7 +49,9 @@ class InterviewStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+# =====================================================
 # USER
+# =====================================================
 
 class User(Base):
     __tablename__ = "users"
@@ -77,7 +81,10 @@ class User(Base):
     )
 
 
+# =====================================================
 # CANDIDATE PROFILE
+# =====================================================
+
 
 class CandidateProfile(Base):
     __tablename__ = "candidate_profiles"
@@ -92,9 +99,9 @@ class CandidateProfile(Base):
         index=True,
     )
 
-    current_location = Column(String(255))
-    preferred_location = Column(String(255))
-    total_experience = Column(Float)
+    current_location = Column(String(255), index=True)
+    preferred_location = Column(String(255), index=True)
+    total_experience = Column(Float, index=True)
     current_ctc = Column(Float)
     expected_ctc = Column(Float)
 
@@ -105,17 +112,127 @@ class CandidateProfile(Base):
 
     user = relationship("User", back_populates="candidate_profile")
 
-    resumes = relationship("Resume", back_populates="candidate", cascade="all, delete-orphan")
-    applications = relationship("Application", back_populates="candidate", cascade="all, delete-orphan")
-    skills = relationship("CandidateSkill", back_populates="candidate", cascade="all, delete-orphan")
-    experiences = relationship("CandidateExperience", back_populates="candidate", cascade="all, delete-orphan")
-    educations = relationship("CandidateEducation", back_populates="candidate", cascade="all, delete-orphan")
-    projects = relationship("CandidateProject", back_populates="candidate", cascade="all, delete-orphan")
-    preferences = relationship("CandidatePreference", back_populates="candidate", uselist=False, cascade="all, delete-orphan")
-    saved_jobs = relationship("SavedJob", back_populates="candidate", cascade="all, delete-orphan")
+    educations = relationship(
+        "CandidateEducation",
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        order_by="desc(CandidateEducation.start_year)"
+    )
+
+    experiences = relationship(
+        "CandidateExperience",
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        order_by="desc(CandidateExperience.start_date)"
+    )
+
+    skills = relationship(
+        "CandidateSkill",
+        back_populates="candidate",
+        cascade="all, delete-orphan"
+    )
+
+    projects = relationship(
+        "CandidateProject",
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        order_by="desc(CandidateProject.created_at)"
+    )
+
+    applications = relationship(
+        "Application",
+        back_populates="candidate",
+        cascade="all, delete-orphan"
+    )
+
+    saved_jobs = relationship(
+        "SavedJob",
+        back_populates="candidate",
+        cascade="all, delete-orphan"
+    )
+
+# =====================================================
+# CANDIDATE EDUCATION
+# =====================================================
+
+class CandidateEducation(Base):
+    __tablename__ = "candidate_education"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    institution = Column(String(255), nullable=False)
+    degree = Column(String(255))
+    field_of_study = Column(String(255))
+    start_year = Column(Integer)
+    end_year = Column(Integer)
+    grade = Column(String(50))
+
+    candidate = relationship("CandidateProfile", back_populates="educations")
 
 
+class CandidateExperience(Base):
+    __tablename__ = "candidate_experiences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    company_name = Column(String(255), nullable=False)
+    role = Column(String(255), nullable=False)
+
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    is_current = Column(Boolean, default=False)
+
+    description = Column(Text)
+
+    candidate = relationship("CandidateProfile", back_populates="experiences")
+
+
+# =====================================================
+# CANDIDATE PROJECTS
+# =====================================================
+
+class CandidateProject(Base):
+    __tablename__ = "candidate_projects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    technologies_used = Column(String(255))
+    project_url = Column(String(500))
+
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    candidate = relationship("CandidateProfile", back_populates="projects")
+
+
+# =====================================================
 # COMPANY
+# =====================================================
 
 class Company(Base):
     __tablename__ = "companies"
@@ -137,7 +254,9 @@ class Company(Base):
     )
 
 
+# =====================================================
 # RECRUITER
+# =====================================================
 
 class Recruiter(Base):
     __tablename__ = "recruiters"
@@ -168,34 +287,25 @@ class Recruiter(Base):
     jobs = relationship("Job", back_populates="recruiter", cascade="all, delete-orphan")
 
 
+# =====================================================
 # JOB
+# =====================================================
 
 class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    recruiter_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("recruiters.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    recruiter_id = Column(UUID(as_uuid=True), ForeignKey("recruiters.id", ondelete="CASCADE"), index=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), index=True)
 
-    company_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("companies.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    title = Column(String(255), nullable=False)
+    title = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=False)
-    location = Column(String(255))
+    location = Column(String(255), index=True)
 
-    min_experience = Column(Float)
+    min_experience = Column(Float, index=True)
     max_experience = Column(Float)
-    salary_min = Column(Float)
+    salary_min = Column(Float, index=True)
     salary_max = Column(Float)
     employment_type = Column(String(50))
 
@@ -211,15 +321,51 @@ class Job(Base):
     saved_by = relationship("SavedJob", back_populates="job", cascade="all, delete-orphan")
 
 
+# =====================================================
 # JOB SKILLS
-
-
+# =====================================================
 
 class Skill(Base):
     __tablename__ = "skills"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(100), nullable=False, unique=True, index=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+
+# =====================================================
+# CANDIDATE SKILLS
+# =====================================================
+
+class CandidateSkill(Base):
+    __tablename__ = "candidate_skills"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    skill_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skills.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    proficiency = Column(String(50))
+    years_of_experience = Column(Float)
+
+    candidate = relationship("CandidateProfile", back_populates="skills")
+    skill = relationship("Skill")
+
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "skill_id", name="uq_candidate_skill"),
+    )
+
+
+
 
 class JobSkill(Base):
     __tablename__ = "job_skills"
@@ -250,7 +396,9 @@ class JobSkill(Base):
     )
 
 
+# =====================================================
 # RESUME
+# =====================================================
 
 class Resume(Base):
     __tablename__ = "resumes"
@@ -271,8 +419,9 @@ class Resume(Base):
     candidate = relationship("CandidateProfile", back_populates="resumes")
 
 
+# =====================================================
 # APPLICATION
-
+# =====================================================
 
 class Application(Base):
     __tablename__ = "applications"
@@ -304,11 +453,13 @@ class Application(Base):
 
     job = relationship("Job", back_populates="applications")
     candidate = relationship("CandidateProfile", back_populates="applications")
+    resume = relationship("Resume")
 
     __table_args__ = (
         UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
         Index("idx_application_status", "status"),
     )
+
 
 
 # =====================================================
