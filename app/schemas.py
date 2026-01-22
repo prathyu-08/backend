@@ -12,7 +12,9 @@ from app.models import (
 )
 
 
+# =====================================================
 # BASE CONFIG
+# =====================================================
 
 class BaseSchema(BaseModel):
     model_config = {"from_attributes": True}
@@ -33,7 +35,9 @@ class CompleteSignupSchema(BaseSchema):
     location: Optional[str] = None
     designation: Optional[str] = None
 
+# =====================================================
 # USER
+# =====================================================
 
 class UserCreate(BaseSchema):
     cognito_sub: str
@@ -53,7 +57,9 @@ class UserRead(BaseSchema):
     created_at: datetime
 
 
+# =====================================================
 # CANDIDATE PROFILE
+# =====================================================
 
 class CandidateProfileBase(BaseSchema):
     current_location: Optional[str] = None
@@ -76,11 +82,23 @@ class CandidateProfileCreate(CandidateProfileBase):
 class CandidateProfileRead(CandidateProfileBase):
     id: UUID
     user_id: UUID
+    full_name: str 
+    email: EmailStr
+    profile_picture: Optional[str] = None
+    current_location: Optional[str]
+    preferred_location: Optional[str]
+    total_experience: Optional[float]
+    current_ctc: Optional[float]
+    expected_ctc: Optional[float]
+    profile_summary: Optional[str]
+    visibility: str
     is_active: bool
     created_at: datetime
 
 
+# =====================================================
 # EDUCATION
+# =====================================================
 
 class CandidateEducationBase(BaseSchema):
     institution: str
@@ -92,7 +110,7 @@ class CandidateEducationBase(BaseSchema):
 
 
 class CandidateEducationCreate(CandidateEducationBase):
-    candidate_id: UUID
+    pass
 
 
 class CandidateEducationRead(CandidateEducationBase):
@@ -100,9 +118,12 @@ class CandidateEducationRead(CandidateEducationBase):
     candidate_id: UUID
 
 
+# =====================================================
 # EXPERIENCE
+# =====================================================
 
-class CandidateExperienceBase(BaseSchema):
+
+class CandidateExperienceCreate(BaseSchema):
     company_name: str
     role: str
     start_date: Optional[datetime] = None
@@ -111,16 +132,16 @@ class CandidateExperienceBase(BaseSchema):
     description: Optional[str] = None
 
 
-class CandidateExperienceCreate(CandidateExperienceBase):
-    candidate_id: UUID
-
-
-class CandidateExperienceRead(CandidateExperienceBase):
+class CandidateExperienceRead(CandidateExperienceCreate):
     id: UUID
-    candidate_id: UUID
 
-
+# =====================================================
 # PROJECTS
+# =====================================================
+
+# =====================================================
+# PROJECTS
+# =====================================================
 
 class CandidateProjectBase(BaseSchema):
     title: str
@@ -132,20 +153,26 @@ class CandidateProjectBase(BaseSchema):
 
 
 class CandidateProjectCreate(CandidateProjectBase):
-    candidate_id: UUID
+    pass
 
 
 class CandidateProjectRead(CandidateProjectBase):
     id: UUID
-    candidate_id: UUID
 
 
-# SKILLS
+
+# =====================================================
+# SKILL MASTER
+# =====================================================
 
 class SkillRead(BaseSchema):
     id: UUID
     name: str
 
+
+# =====================================================
+# CANDIDATE SKILLS
+# =====================================================
 
 class CandidateSkillBase(BaseSchema):
     proficiency: Optional[str] = None
@@ -153,17 +180,18 @@ class CandidateSkillBase(BaseSchema):
 
 
 class CandidateSkillCreate(CandidateSkillBase):
-    candidate_id: UUID
     skill_id: UUID
 
 
 class CandidateSkillRead(CandidateSkillBase):
     id: UUID
-    candidate_id: UUID
     skill_id: UUID
 
 
+
+# =====================================================
 # COMPANY
+# =====================================================
 
 class CompanyCreate(BaseSchema):
     name: str
@@ -178,7 +206,9 @@ class CompanyRead(CompanyCreate):
     created_at: datetime
 
 
+# =====================================================
 # RECRUITER
+# =====================================================
 
 class RecruiterCreate(BaseSchema):
     user_id: UUID
@@ -195,7 +225,9 @@ class RecruiterRead(BaseSchema):
     created_at: datetime
 
 
+# =====================================================
 # JOB
+# =====================================================
 
 class JobBase(BaseSchema):
     title: str
@@ -208,11 +240,11 @@ class JobBase(BaseSchema):
     employment_type: Optional[str] = None
     status: JobStatus = JobStatus.draft
 
-
 class JobCreate(JobBase):
-    recruiter_id: UUID
-    company_id: UUID
-
+    """
+    recruiter_id and company_id are derived from logged-in recruiter
+    """
+    pass
 
 class JobRead(JobBase):
     id: UUID
@@ -222,8 +254,9 @@ class JobRead(JobBase):
     created_at: datetime
 
 
+# =====================================================
 # JOB SKILLS
-
+# =====================================================
 
 class JobSkillCreate(BaseSchema):
     job_id: UUID
@@ -236,10 +269,11 @@ class JobSkillRead(JobSkillCreate):
     id: UUID
 
 
+# =====================================================
 # RESUME
+# =====================================================
 
 class ResumeCreate(BaseSchema):
-    candidate_id: UUID
     resume_s3_key: str
     is_primary: bool = True   # ✅ MATCHES DB DEFAULT
 
@@ -252,7 +286,9 @@ class ResumeRead(BaseSchema):
     uploaded_at: datetime
 
 
+# =====================================================
 # APPLICATION
+# =====================================================
 
 class ApplicationCreate(BaseSchema):
     job_id: UUID
@@ -269,7 +305,9 @@ class ApplicationRead(BaseSchema):
     applied_at: datetime
 
 
+# =====================================================
 # INTERVIEW
+# =====================================================
 
 class InterviewCreate(BaseSchema):
     application_id: UUID
