@@ -447,47 +447,34 @@ class Application(Base):
     job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("jobs.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
+        index=True,
     )
 
     candidate_id = Column(
         UUID(as_uuid=True),
         ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
+        index=True,
     )
 
     resume_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("resumes.id"),
-        nullable=True
+        ForeignKey("resumes.id", ondelete="SET NULL"),
+        index=True,
     )
 
-    status = Column(
-        Enum(
-            "applied",
-            "shortlisted",
-            "interview",
-            "offered",
-            "rejected",
-            name="application_status"
-        ),
-        default="applied"
-    )
-
+    status = Column(Enum(ApplicationStatus, name="application_status"), default=ApplicationStatus.applied)
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # 🔥 THIS LINE FIXES YOUR ERROR
-    interview = relationship(
-        "Interview",
-        back_populates="application",
-        uselist=False,
-        cascade="all, delete-orphan"
-    )
-
-    # Existing relationships (keep them)
     job = relationship("Job", back_populates="applications")
     candidate = relationship("CandidateProfile", back_populates="applications")
     resume = relationship("Resume")
+
+    _table_args_ = (
+        UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
+        Index("idx_application_status", "status"),
+    )
 
 
 
@@ -527,6 +514,7 @@ class SavedJob(Base):
 # =====================================================
 # INTERVIEW
 # =====================================================
+
 class Interview(Base):
     __tablename__ = "interviews"
 
@@ -539,87 +527,9 @@ class Interview(Base):
         index=True,
     )
 
-    interview_type = Column(
-        Enum("online", "offline", "telephone", name="interview_type"),
-        nullable=False
-    )
-
-    # ✅ Final interview time (after slot selection)
-    scheduled_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Optional details
-    meeting_link = Column(String(500))      # online
-    location = Column(String(500))          # offline
-    phone_number = Column(String(50))       # telephone
-
-    status = Column(
-        Enum("scheduled", "rescheduled", "cancelled", name="interview_status"),
-        default="scheduled"
-    )
-
+    scheduled_at = Column(DateTime(timezone=True))
+    meeting_link = Column(String(500))
+    status = Column(Enum(InterviewStatus, name="interview_status"), default=InterviewStatus.scheduled)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # ---------------- RELATIONSHIPS ----------------
-    application = relationship("Application", back_populates="interview")
-
-    slots = relationship(
-        "InterviewSlot",
-        back_populates="interview",
-        cascade="all, delete-orphan"
-    )
-
-    # ✅ THIS WAS MISSING (CRITICAL)
-    interviewers = relationship(
-        "Interviewer",
-        secondary="interview_interviewers",
-        back_populates="interviews"
-    )
-class InterviewSlot(Base):
-    __tablename__ = "interview_slots"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
-    interview_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("interviews.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    start_time = Column(DateTime(timezone=True), nullable=False)
-    end_time = Column(DateTime(timezone=True), nullable=False)
-
-    is_selected = Column(Boolean, default=False)
-
-    interview = relationship("Interview", back_populates="slots")
-
-class Interviewer(Base):
-    __tablename__ = "interviewers"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), nullable=False)
-
-    # ✅ Make email unique (VERY IMPORTANT)
-    email = Column(String(255), nullable=False, unique=True)
-
-    # ✅ Back reference to interviews
-    interviews = relationship(
-        "Interview",
-        secondary="interview_interviewers",
-        back_populates="interviewers"
-    )
-    
-    
-class InterviewInterviewer(Base):
-    __tablename__ = "interview_interviewers"
-
-    interview_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("interviews.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-
-    interviewer_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("interviewers.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
+    application = relationship("Application")
