@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
-from app.db import Base
+from .db import Base
 
 
 # =====================================================
@@ -54,7 +54,7 @@ class InterviewStatus(str, enum.Enum):
 # =====================================================
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__= "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cognito_sub = Column(String(100), unique=True, nullable=False, index=True)
@@ -98,6 +98,7 @@ class CandidateProfile(Base):
         nullable=False,
         index=True,
     )
+    profile_picture = Column(String(500))
 
     current_location = Column(String(255), index=True)
     preferred_location = Column(String(255), index=True)
@@ -117,6 +118,11 @@ class CandidateProfile(Base):
         back_populates="candidate",
         cascade="all, delete-orphan",
         order_by="desc(CandidateEducation.start_year)"
+    )
+    resumes = relationship(
+        "Resume",
+        back_populates="candidate",
+        cascade="all, delete-orphan",
     )
 
     experiences = relationship(
@@ -248,7 +254,7 @@ class Company(Base):
     recruiters = relationship("Recruiter", back_populates="company", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="company", cascade="all, delete-orphan")
 
-    __table_args__ = (
+    _table_args_ = (
         Index("idx_company_name", "name"),
         Index("idx_company_industry", "industry"),
     )
@@ -360,7 +366,7 @@ class CandidateSkill(Base):
     candidate = relationship("CandidateProfile", back_populates="skills")
     skill = relationship("Skill")
 
-    __table_args__ = (
+    _table_args_ = (
         UniqueConstraint("candidate_id", "skill_id", name="uq_candidate_skill"),
     )
 
@@ -391,10 +397,14 @@ class JobSkill(Base):
     job = relationship("Job", back_populates="job_skills")
     skill = relationship("Skill")
 
-    __table_args__ = (
+    _table_args_ = (
         UniqueConstraint("job_id", "skill_id", name="uq_job_skill"),
     )
 
+
+# =====================================================
+# RESUME
+# =====================================================
 
 # =====================================================
 # RESUME
@@ -413,7 +423,13 @@ class Resume(Base):
     )
 
     resume_s3_key = Column(String(500), nullable=False)
-    is_primary = Column(Boolean, default=True)
+
+    # ✅ NEW COLUMNS (REQUIRED)
+    original_filename = Column(String(255))
+    file_size = Column(Integer)
+    content_type = Column(String(100))
+
+    is_primary = Column(Boolean, default=False)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
 
     candidate = relationship("CandidateProfile", back_populates="resumes")
@@ -431,34 +447,47 @@ class Application(Base):
     job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("jobs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False
     )
 
     candidate_id = Column(
         UUID(as_uuid=True),
         ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False
     )
 
     resume_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("resumes.id", ondelete="SET NULL"),
-        index=True,
+        ForeignKey("resumes.id"),
+        nullable=True
     )
 
-    status = Column(Enum(ApplicationStatus, name="application_status"), default=ApplicationStatus.applied)
+    status = Column(
+        Enum(
+            "applied",
+            "shortlisted",
+            "interview",
+            "offered",
+            "rejected",
+            name="application_status"
+        ),
+        default="applied"
+    )
+
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # 🔥 THIS LINE FIXES YOUR ERROR
+    interview = relationship(
+        "Interview",
+        back_populates="application",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+    # Existing relationships (keep them)
     job = relationship("Job", back_populates="applications")
     candidate = relationship("CandidateProfile", back_populates="applications")
     resume = relationship("Resume")
-
-    __table_args__ = (
-        UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
-        Index("idx_application_status", "status"),
-    )
 
 
 
@@ -490,7 +519,7 @@ class SavedJob(Base):
     candidate = relationship("CandidateProfile", back_populates="saved_jobs")
     job = relationship("Job", back_populates="saved_by")
 
-    __table_args__ = (
+    _table_args_ = (
         UniqueConstraint("candidate_id", "job_id", name="uq_saved_job"),
     )
 
@@ -498,7 +527,6 @@ class SavedJob(Base):
 # =====================================================
 # INTERVIEW
 # =====================================================
-
 class Interview(Base):
     __tablename__ = "interviews"
 
@@ -511,9 +539,87 @@ class Interview(Base):
         index=True,
     )
 
-    scheduled_at = Column(DateTime(timezone=True))
-    meeting_link = Column(String(500))
-    status = Column(Enum(InterviewStatus, name="interview_status"), default=InterviewStatus.scheduled)
+    interview_type = Column(
+        Enum("online", "offline", "telephone", name="interview_type"),
+        nullable=False
+    )
+
+    # ✅ Final interview time (after slot selection)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Optional details
+    meeting_link = Column(String(500))      # online
+    location = Column(String(500))          # offline
+    phone_number = Column(String(50))       # telephone
+
+    status = Column(
+        Enum("scheduled", "rescheduled", "cancelled", name="interview_status"),
+        default="scheduled"
+    )
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    application = relationship("Application")
+    # ---------------- RELATIONSHIPS ----------------
+    application = relationship("Application", back_populates="interview")
+
+    slots = relationship(
+        "InterviewSlot",
+        back_populates="interview",
+        cascade="all, delete-orphan"
+    )
+
+    # ✅ THIS WAS MISSING (CRITICAL)
+    interviewers = relationship(
+        "Interviewer",
+        secondary="interview_interviewers",
+        back_populates="interviews"
+    )
+class InterviewSlot(Base):
+    __tablename__ = "interview_slots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+
+    is_selected = Column(Boolean, default=False)
+
+    interview = relationship("Interview", back_populates="slots")
+
+class Interviewer(Base):
+    __tablename__ = "interviewers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+
+    # ✅ Make email unique (VERY IMPORTANT)
+    email = Column(String(255), nullable=False, unique=True)
+
+    # ✅ Back reference to interviews
+    interviews = relationship(
+        "Interview",
+        secondary="interview_interviewers",
+        back_populates="interviewers"
+    )
+    
+    
+class InterviewInterviewer(Base):
+    __tablename__ = "interview_interviewers"
+
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    interviewer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviewers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
