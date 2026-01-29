@@ -322,3 +322,14 @@ class InterviewRead(BaseSchema):
     meeting_link: Optional[str]
     status: InterviewStatus
     created_at: datetime
+
+   
+class ScheduleInterviewRequest(BaseModel):
+    application_id: UUID
+    schedule_mode: str          
+    interview_type: str        
+    scheduled_at: Optional[datetime] = None
+    interview_date: Optional[str] = None
+    interviewer_ids: List[UUID]
+    meeting_link: Optional[str] = None
+    location: Optional[str] = None
