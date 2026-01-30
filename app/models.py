@@ -90,14 +90,12 @@ class CandidateProfile(Base):
     __tablename__ = "candidate_profiles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        unique=True,
-        nullable=False,
-        index=True,
+        unique=True, nullable=False, index=True
     )
+
     profile_picture = Column(String(500))
 
     current_location = Column(String(255), index=True)
@@ -107,7 +105,18 @@ class CandidateProfile(Base):
     expected_ctc = Column(Float)
 
     profile_summary = Column(Text)
+    resume_headline = Column(String(500))
+    notice_period = Column(String(50))
+    willing_to_relocate = Column(Boolean, default=False)
+    preferred_shift = Column(String(50))
+    employment_type_preference = Column(String(100))
+
+    linkedin_url = Column(String(500))
+    github_url = Column(String(500))
+    portfolio_url = Column(String(500))
+
     visibility = Column(String(20), default="public")
+    last_active = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -119,11 +128,6 @@ class CandidateProfile(Base):
         cascade="all, delete-orphan",
         order_by="desc(CandidateEducation.start_year)"
     )
-    resumes = relationship(
-        "Resume",
-        back_populates="candidate",
-        cascade="all, delete-orphan",
-    )
 
     experiences = relationship(
         "CandidateExperience",
@@ -132,17 +136,24 @@ class CandidateProfile(Base):
         order_by="desc(CandidateExperience.start_date)"
     )
 
+    projects = relationship(
+        "CandidateProject",
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        order_by="desc(CandidateProject.created_at)"
+    )
+
     skills = relationship(
         "CandidateSkill",
         back_populates="candidate",
         cascade="all, delete-orphan"
     )
 
-    projects = relationship(
-        "CandidateProject",
+    resumes = relationship(
+        "Resume",
         back_populates="candidate",
         cascade="all, delete-orphan",
-        order_by="desc(CandidateProject.created_at)"
+        lazy="selectin"
     )
 
     applications = relationship(
@@ -156,7 +167,6 @@ class CandidateProfile(Base):
         back_populates="candidate",
         cascade="all, delete-orphan"
     )
-
 # =====================================================
 # CANDIDATE EDUCATION
 # =====================================================
@@ -533,3 +543,34 @@ class Interview(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     application = relationship("Application")
+
+# =====================================================
+# PROFILE VIEWS (ANALYTICS)
+# =====================================================
+
+class ProfileView(Base):
+    __tablename__ = "profile_views"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    viewed_by_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    viewed_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+    candidate = relationship("CandidateProfile")

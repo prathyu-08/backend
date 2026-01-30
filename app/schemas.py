@@ -174,6 +174,11 @@ class SkillRead(BaseSchema):
 # CANDIDATE SKILLS
 # =====================================================
 
+class CandidateSkillInput(BaseSchema):
+    name: str
+    proficiency: Optional[str] = None
+    years_of_experience: Optional[float] = None
+
 class CandidateSkillBase(BaseSchema):
     proficiency: Optional[str] = None
     years_of_experience: Optional[float] = None
@@ -185,8 +190,6 @@ class CandidateSkillCreate(CandidateSkillBase):
 
 class CandidateSkillRead(CandidateSkillBase):
     id: UUID
-    skill_id: UUID
-
 
 
 # =====================================================
@@ -333,3 +336,24 @@ class ScheduleInterviewRequest(BaseModel):
     interviewer_ids: List[UUID]
     meeting_link: Optional[str] = None
     location: Optional[str] = None
+
+# =====================================================
+# PROFILE ANALYTICS
+# =====================================================
+
+class ProfileCompletion(BaseSchema):
+    percentage: int
+    missing_sections: list[str]
+    suggestions: list[str]
+    is_complete: bool
+    score_breakdown: dict[str, int]
+
+
+class ProfileAnalytics(BaseSchema):
+    profile_views: int
+    recent_views: int
+    total_applications: int
+    saved_jobs: int
+    application_breakdown: dict[str, int]
+    profile_completion: int
+    profile_score: int
