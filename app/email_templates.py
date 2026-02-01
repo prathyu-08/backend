@@ -2,10 +2,9 @@ from datetime import datetime
 
 PORTAL_URL = "http://localhost:8501/my-applications"
 
-
-# --------------------------------------------------
+# ==================================================
 # RESUME UPLOADED
-# --------------------------------------------------
+# ==================================================
 def resume_uploaded():
     return (
         "Resume Uploaded Successfully",
@@ -21,11 +20,10 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # FORGOT PASSWORD
-# --------------------------------------------------
-def forgot_password(link):
+# ==================================================
+def forgot_password(link: str):
     return (
         "Reset Your Password",
         f"""
@@ -43,11 +41,10 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # JOB APPLIED
-# --------------------------------------------------
-def job_applied(job_title):
+# ==================================================
+def job_applied(job_title: str):
     return (
         f"Application Submitted – {job_title}",
         f"""
@@ -67,11 +64,10 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # SHORTLISTED
-# --------------------------------------------------
-def shortlisted(job_title):
+# ==================================================
+def shortlisted(job_title: str):
     return (
         f"Shortlisted for {job_title} 🎉",
         f"""
@@ -91,11 +87,10 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # REJECTED
-# --------------------------------------------------
-def rejected(job_title):
+# ==================================================
+def rejected(job_title: str):
     return (
         f"Application Update – {job_title}",
         f"""
@@ -112,11 +107,10 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # OFFER
-# --------------------------------------------------
-def offer(job_title):
+# ==================================================
+def offer(job_title: str):
     return (
         f"Offer Letter – {job_title} 🎉",
         f"""
@@ -133,33 +127,46 @@ Recruitment Team
 """
     )
 
-def interview(job_title, details):
+# ==================================================
+# BASIC INTERVIEW (GENERIC)
+# ==================================================
+def interview(job_title: str, details: str):
     return (
         "Interview Scheduled",
-        f"Your interview for {job_title} is scheduled.\n\n{details}"
+        f"""
+Hi,
+
+Your interview for **{job_title}** is scheduled.
+
+{details}
+
+Regards,
+Recruitment Team
+"""
     )
 
-
-
+# ==================================================
+# INTERVIEW SCHEDULED (DETAILED)
+# ==================================================
 def interview_scheduled(
-    candidate_name,
-    job_title,
-    interview_type,
-    scheduled_at,
-    meeting_link=None,
-    location=None,
-    phone_number=None,
+    candidate_name: str,
+    job_title: str,
+    interview_type: str,
+    scheduled_at: str,
+    meeting_link: str | None = None,
+    location: str | None = None,
+    phone_number: str | None = None,
 ):
     details = f"""
 Interview Type: {interview_type.title()}
 Date & Time: {scheduled_at}
 """
 
-    if interview_type == "online":
+    if interview_type == "online" and meeting_link:
         details += f"\nMeeting Link:\n{meeting_link}"
-    elif interview_type == "offline":
+    elif interview_type == "offline" and location:
         details += f"\nLocation:\n{location}"
-    else:
+    elif interview_type == "telephone" and phone_number:
         details += f"\nContact Number:\n{phone_number}"
 
     return (
@@ -170,7 +177,7 @@ Hi {candidate_name},
 We are pleased to inform you that you have been shortlisted for the next stage
 of the hiring process.
 
-Your interview for the position of "{job_title}" has been scheduled.
+Your interview for the position of **{job_title}** has been scheduled.
 Please find the details below:
 
 {details}
@@ -185,11 +192,14 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
-# INTERVIEW SLOTS SHARED (VERY IMPORTANT)
-# --------------------------------------------------
-def interview_slots_shared(candidate_name, job_title, interview_type):
+# ==================================================
+# INTERVIEW SLOTS SHARED
+# ==================================================
+def interview_slots_shared(
+    candidate_name: str,
+    job_title: str,
+    interview_type: str,
+):
     return (
         f"Select Interview Slot – {job_title}",
         f"""
@@ -212,17 +222,16 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
-# INTERVIEW SLOT CONFIRMED (REAL-WORLD EMAIL)
-# --------------------------------------------------
+# ==================================================
+# INTERVIEW SLOT CONFIRMED
+# ==================================================
 def interview_slot_confirmed(
-    candidate_name,
-    job_title,
-    interview_type,
-    scheduled_at,
-    meeting_link=None,
-    location=None,
+    candidate_name: str,
+    job_title: str,
+    interview_type: str,
+    scheduled_at: datetime,
+    meeting_link: str | None = None,
+    location: str | None = None,
 ):
     date_str = scheduled_at.strftime("%A, %d %B %Y")
     time_str = scheduled_at.strftime("%I:%M %p")
@@ -265,19 +274,24 @@ Recruitment Team
 """
     )
 
-
-# --------------------------------------------------
+# ==================================================
 # INTERVIEW RESCHEDULED
-# --------------------------------------------------
+# ==================================================
 def interview_rescheduled(
-    candidate_name,
-    job_title,
-    interview_type,
-    old_datetime,
-    new_datetime,
-    meeting_link=None,
-    location=None,
+    candidate_name: str,
+    job_title: str,
+    interview_type: str,
+    old_datetime: str,
+    new_datetime: str,
+    meeting_link: str | None = None,
+    location: str | None = None,
 ):
+    updated_details = (
+        meeting_link
+        or location
+        or "You will receive a call on your registered phone number."
+    )
+
     return (
         f"Interview Rescheduled – {job_title}",
         f"""
@@ -294,12 +308,29 @@ New Schedule:
 Interview Type: {interview_type.title()}
 
 Updated Details:
-{meeting_link or location or "You will receive a call on your registered number."}
+{updated_details}
 
 You can manage your interview here:
 👉 {PORTAL_URL}
 
 Regards,
+Recruitment Team
+"""
+    )
+
+
+def application_confirmation(job_title, company_name):
+    return (
+        "Application Submitted Successfully ✅",
+        f"""
+Hi,
+
+Your application for the position of "{job_title}" at {company_name}
+has been successfully submitted.
+
+Our hiring team will review your profile and get back to you.
+
+Best regards,
 Recruitment Team
 """
     )
