@@ -16,6 +16,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON
+
 from .db import Base
 
 
@@ -36,7 +38,6 @@ class JobStatus(str, enum.Enum):
 
 class ApplicationStatus(str, enum.Enum):
     applied = "applied"
-    viewed = "viewed"
     shortlisted = "shortlisted"
     interview = "interview"
     offered = "offered"
@@ -110,6 +111,7 @@ class CandidateProfile(Base):
     willing_to_relocate = Column(Boolean, default=False)
     preferred_shift = Column(String(50))
     employment_type_preference = Column(String(100))
+    public_username = Column(String(100), unique=True, index=True)
 
     linkedin_url = Column(String(500))
     github_url = Column(String(500))
@@ -167,6 +169,8 @@ class CandidateProfile(Base):
         back_populates="candidate",
         cascade="all, delete-orphan"
     )
+
+
 # =====================================================
 # CANDIDATE EDUCATION
 # =====================================================
@@ -312,11 +316,25 @@ class Job(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    recruiter_id = Column(UUID(as_uuid=True), ForeignKey("recruiters.id", ondelete="CASCADE"), index=True)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id", ondelete="CASCADE"),
+        index=True,
+    )
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        index=True,
+    )
 
     title = Column(String(255), nullable=False, index=True)
-    description = Column(Text, nullable=False)
+
+    # 🔧 FIX 1: allow text OR file
+    description = Column(Text, nullable=True)
+
+    # 🔧 FIX 2: store S3 file key
+    description_file_key = Column(String(512), nullable=True)
+
     location = Column(String(255), index=True)
 
     min_experience = Column(Float, index=True)
@@ -325,17 +343,33 @@ class Job(Base):
     salary_max = Column(Float)
     employment_type = Column(String(50))
 
-    status = Column(Enum(JobStatus, name="job_status"), default=JobStatus.draft, index=True)
+    status = Column(
+        Enum(JobStatus, name="job_status"),
+        default=JobStatus.draft,
+        index=True,
+    )
     is_active = Column(Boolean, default=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     recruiter = relationship("Recruiter", back_populates="jobs")
     company = relationship("Company", back_populates="jobs")
 
-    applications = relationship("Application", back_populates="job", cascade="all, delete-orphan")
-    job_skills = relationship("JobSkill", back_populates="job", cascade="all, delete-orphan")
-    saved_by = relationship("SavedJob", back_populates="job", cascade="all, delete-orphan")
-
+    applications = relationship(
+        "Application",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
+    job_skills = relationship(
+        "JobSkill",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
+    saved_by = relationship(
+        "SavedJob",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
 
 # =====================================================
 # JOB SKILLS
@@ -355,19 +389,15 @@ class CandidateSkill(Base):
     __tablename__ = "candidate_skills"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
     candidate_id = Column(
         UUID(as_uuid=True),
         ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False, index=True
     )
-
     skill_id = Column(
         UUID(as_uuid=True),
         ForeignKey("skills.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False, index=True
     )
 
     proficiency = Column(String(50))
@@ -376,7 +406,7 @@ class CandidateSkill(Base):
     candidate = relationship("CandidateProfile", back_populates="skills")
     skill = relationship("Skill")
 
-    _table_args_ = (
+    __table_args__ = (
         UniqueConstraint("candidate_id", "skill_id", name="uq_candidate_skill"),
     )
 
@@ -413,8 +443,51 @@ class JobSkill(Base):
 
 
 # =====================================================
-# RESUME
+# JOB DESCRIPTION MASTER
 # =====================================================
+
+class JobDescription(Base):
+    __tablename__ = "job_descriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    title = Column(String(255), nullable=False, index=True)
+
+    # Either rich text OR uploaded file
+    description_text = Column(Text, nullable=True)
+    description_file_key = Column(String(512), nullable=True)
+
+    # Metadata
+    experience_level = Column(String(50), nullable=True)
+    job_type = Column(String(50), nullable=True)
+    location = Column(String(100), nullable=True)
+
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# =====================================================
+# JOB DESCRIPTION ↔ SKILLS (MANY TO MANY)
+# =====================================================
+
+class JobDescriptionSkill(Base):
+    __tablename__ = "job_description_skills"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    job_description_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("job_descriptions.id", ondelete="CASCADE"),
+    )
+
+    skill_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skills.id", ondelete="CASCADE"),
+    )
+
+
 
 # =====================================================
 # RESUME
@@ -434,16 +507,30 @@ class Resume(Base):
 
     resume_s3_key = Column(String(500), nullable=False)
 
-    # ✅ NEW COLUMNS (REQUIRED)
-    original_filename = Column(String(255))
+    # ================= EXISTING =================
+    original_filename = Column(String(255), nullable=False)
     file_size = Column(Integer)
     content_type = Column(String(100))
 
     is_primary = Column(Boolean, default=False)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    candidate = relationship("CandidateProfile", back_populates="resumes")
+    # ================= NEW (ADDED – REQUIRED) =================
+    display_name = Column(String(255), nullable=True)
+    tags = Column(String(255), nullable=True)
 
+    share_count = Column(Integer, default=0)
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    parsed_text = Column(Text, nullable=True)
+
+    # ================= RELATIONSHIP =================
+    candidate = relationship("CandidateProfile", back_populates="resumes")
+    downloaded_count = Column(Integer, default=0)
+
+# ====================================================
+# APPLICATION
+# =====================================================
 
 # =====================================================
 # APPLICATION
@@ -457,34 +544,53 @@ class Application(Base):
     job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("jobs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False
     )
 
     candidate_id = Column(
         UUID(as_uuid=True),
         ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        nullable=False
     )
 
     resume_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("resumes.id", ondelete="SET NULL"),
-        index=True,
+        ForeignKey("resumes.id"),
+        nullable=True
     )
 
-    status = Column(Enum(ApplicationStatus, name="application_status"), default=ApplicationStatus.applied)
+    status = Column(
+        Enum(
+            "applied",
+            "shortlisted",
+            "interview",
+            "offered",
+            "rejected",
+            name="application_status"
+        ),
+        default="applied"
+    )
+
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # 🔥 THIS LINE FIXES YOUR ERROR
+    interview = relationship(
+        "Interview",
+        back_populates="application",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+    # Existing relationships (keep them)
     job = relationship("Job", back_populates="applications")
     candidate = relationship("CandidateProfile", back_populates="applications")
     resume = relationship("Resume")
 
-    _table_args_ = (
-        UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
-        Index("idx_application_status", "status"),
-    )
+# ============================
+# APPLICATION FORM 
+# =========================
+
+
 
 
 
@@ -525,6 +631,9 @@ class SavedJob(Base):
 # INTERVIEW
 # =====================================================
 
+# =====================================================
+# INTERVIEW
+# =====================================================
 class Interview(Base):
     __tablename__ = "interviews"
 
@@ -537,17 +646,114 @@ class Interview(Base):
         index=True,
     )
 
-    scheduled_at = Column(DateTime(timezone=True))
-    meeting_link = Column(String(500))
-    status = Column(Enum(InterviewStatus, name="interview_status"), default=InterviewStatus.scheduled)
+    interview_type = Column(
+        Enum("online", "offline", "telephone", name="interview_type"),
+        nullable=False
+    )
+
+    # ✅ Final interview time (after slot selection)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Optional details
+    meeting_link = Column(String(500))      # online
+    location = Column(String(500))          # offline
+    phone_number = Column(String(50))       # telephone
+
+    status = Column(
+        Enum("scheduled", "rescheduled", "cancelled", name="interview_status"),
+        default="scheduled"
+    )
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    application = relationship("Application")
+    # ---------------- RELATIONSHIPS ----------------
+    application = relationship("Application", back_populates="interview")
 
-# =====================================================
-# PROFILE VIEWS (ANALYTICS)
-# =====================================================
+    slots = relationship(
+        "InterviewSlot",
+        back_populates="interview",
+        cascade="all, delete-orphan"
+    )
 
+    # ✅ THIS WAS MISSING (CRITICAL)
+    interviewers = relationship(
+        "Interviewer",
+        secondary="interview_interviewers",
+        back_populates="interviews"
+    )
+
+class Interviewer(Base):
+    __tablename__ = "interviewers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+
+    # ✅ Make email unique (VERY IMPORTANT)
+    email = Column(String(255), nullable=False, unique=True)
+
+    # ✅ Back reference to interviews
+    interviews = relationship(
+        "Interview",
+        secondary="interview_interviewers",
+        back_populates="interviewers"
+    )
+    
+class InterviewInterviewer(Base):
+    __tablename__ = "interview_interviewers"
+
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    interviewer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviewers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    
+class InterviewSlot(Base):
+    __tablename__ = "interview_slots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+
+    is_selected = Column(Boolean, default=False)
+
+    interview = relationship("Interview", back_populates="slots")
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    title = Column(String(255))
+    message = Column(Text)
+
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+
+
+
+    
 class ProfileView(Base):
     __tablename__ = "profile_views"
 
@@ -574,3 +780,63 @@ class ProfileView(Base):
     )
 
     candidate = relationship("CandidateProfile")
+    
+    
+    
+class JobApplicationQuestion(Base):
+    __tablename__ = "job_application_questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    question_text = Column(Text, nullable=False)
+
+    # text | textarea | select | boolean
+    field_type = Column(String(50), nullable=False)
+
+    # Used only when field_type == "select"
+    options = Column(JSON, nullable=True)
+
+    is_required = Column(Boolean, default=False)
+
+    order_index = Column(Integer, default=0)
+
+    job = relationship("Job", backref="application_questions")
+    answers = relationship(
+        "JobApplicationAnswer",
+        back_populates="question",
+        cascade="all, delete-orphan",
+    )
+    
+class JobApplicationAnswer(Base):
+    __tablename__ = "job_application_answers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    application_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    question_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("job_application_questions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Store answer as string (simple & flexible)
+    answer = Column(Text, nullable=False)
+
+    question = relationship(
+        "JobApplicationQuestion",
+        back_populates="answers",
+    )

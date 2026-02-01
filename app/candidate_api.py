@@ -3,9 +3,9 @@ from sqlalchemy import func, and_,text
 from sqlalchemy.orm import Session, joinedload
 from uuid import UUID
 from typing import List, Optional
-from app.db import get_db
-from app.utils.s3 import upload_profile_picture, upload_resume as upload_resume_s3, delete_file
-from app.models import (
+from .db import get_db
+from .utils.s3 import upload_profile_picture, upload_resume as upload_resume_s3, delete_file
+from .models import (
     User,
     CandidateProfile,
     UserRole,
@@ -19,7 +19,7 @@ from app.models import (
     Application,
     SavedJob,
 )
-from app.schemas import (
+from .schemas import (
     CandidateProfileCreate,
     CandidateProfileRead,
     CandidateEducationCreate,
@@ -33,8 +33,9 @@ from app.schemas import (
     ResumeRead,
     ProfileAnalytics,
     ProfileCompletion,
+    CandidateProfileUpdate
 )
-from app.auth_api import  get_current_candidate
+from .auth_api import get_current_candidate, get_current_recruiter
 router = APIRouter(prefix="/candidate", tags=["Candidate"])
 
 
@@ -105,6 +106,7 @@ def get_profile(
         "linkedin_url": profile.linkedin_url,
         "github_url": profile.github_url,
         "portfolio_url": profile.portfolio_url,
+        "public_username": profile.public_username, 
         "last_active": profile.last_active,
         "is_active": profile.is_active,
         "created_at": profile.created_at,
@@ -116,7 +118,7 @@ def get_profile(
     response_model=CandidateProfileRead,
 )
 def update_profile(
-    payload: CandidateProfileCreate,
+    payload: CandidateProfileUpdate,
     db: Session = Depends(get_db),
     profile: CandidateProfile = Depends(get_candidate_profile)
 ):
@@ -137,15 +139,40 @@ def update_profile(
             "linkedin_url",
             "github_url",
             "portfolio_url",
+            "public_username",
         }
 
-        update_data = payload.dict(exclude_unset=True)
+        update_data = payload.model_dump(exclude_unset=True)
+        if "public_username" in update_data:
+            existing = db.query(CandidateProfile).filter(
+                func.lower(CandidateProfile.public_username) == update_data["public_username"].lower(),
+                CandidateProfile.id != profile.id
+            ).first()
 
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Public username already taken"
+                )
         for key, value in update_data.items():
             if key in ALLOWED_FIELDS:
                 setattr(profile, key, value)
 
         profile.last_active = func.now()
+        # 🔗 AUTO-GENERATE USERNAME IF NOT SET
+        if not profile.public_username:
+            base = profile.user.full_name.lower().replace(" ", "")
+            candidate_username = base
+
+            counter = 1
+            while db.query(CandidateProfile).filter(
+                CandidateProfile.public_username == candidate_username
+            ).first():
+                candidate_username = f"{base}{counter}"
+                counter += 1
+
+            profile.public_username = candidate_username
+
         db.commit()
         db.refresh(profile)
 
@@ -172,6 +199,7 @@ def update_profile(
             "linkedin_url": profile.linkedin_url,
             "github_url": profile.github_url,
             "portfolio_url": profile.portfolio_url,
+            "public_username": profile.public_username, 
             "last_active": profile.last_active,
             "is_active": profile.is_active,
             "created_at": profile.created_at,
@@ -184,7 +212,6 @@ def update_profile(
             detail=f"Failed to update profile: {str(e)}"
         )
 
-
 @router.post(
     "/profile-picture",
     summary="Upload or replace profile picture"
@@ -194,24 +221,45 @@ def upload_profile_picture_api(
     db: Session = Depends(get_db),
     profile: CandidateProfile = Depends(get_candidate_profile),
 ):
+    # =================================================
+    # HARD VALIDATION (FIXES NoneType CRASH)
+    # =================================================
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Invalid file name")
+
+    if not file.content_type:
+        raise HTTPException(status_code=400, detail="Invalid file type")
+
     ALLOWED_TYPES = {"image/jpeg", "image/png", "image/jpg"}
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Only JPG or PNG allowed")
 
-    # size check
+    # =================================================
+    # FILE SIZE CHECK (SAFE)
+    # =================================================
     file.file.seek(0, 2)
     size = file.file.tell()
     file.file.seek(0)
+
+    if size <= 0:
+        raise HTTPException(status_code=400, detail="Empty file")
 
     if size > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Max size is 2MB")
 
     try:
-        # delete old picture
+        # =================================================
+        # DELETE OLD PICTURE (IF EXISTS)
+        # =================================================
         if profile.profile_picture:
             delete_file(profile.profile_picture)
 
-        # upload new
+        # =================================================
+        # UPLOAD NEW PICTURE
+        # =================================================
         s3_key = upload_profile_picture(file)
 
         profile.profile_picture = s3_key
@@ -224,7 +272,10 @@ def upload_profile_picture_api(
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload profile picture: {str(e)}"
+        )
 
 
 
@@ -1059,7 +1110,10 @@ def get_profile_analytics(
             recent_views=recent_views,
             total_applications=total_applications,
             saved_jobs=saved_jobs_count,
-            application_breakdown={status.value: count for status, count in application_stats},
+            application_breakdown={
+                (status.value if hasattr(status, "value") else str(status)): count
+                for status, count in application_stats
+            },
             profile_completion=completion_data["percentage"],
             profile_score=completion_data["percentage"]
         )
@@ -1068,5 +1122,103 @@ def get_profile_analytics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch analytics: {str(e)}"
         )
+    
 
 
+
+
+@router.get(
+    "/public/{username}",
+    summary="Public candidate profile (LinkedIn style)"
+)
+def public_profile(
+    username: str,
+    db: Session = Depends(get_db)
+):
+    profile = (
+        db.query(CandidateProfile)
+        .options(
+            joinedload(CandidateProfile.user),
+            joinedload(CandidateProfile.educations),
+            joinedload(CandidateProfile.experiences),
+            joinedload(CandidateProfile.skills).joinedload(CandidateSkill.skill),
+            joinedload(CandidateProfile.projects),
+        )
+        .filter(
+            CandidateProfile.public_username == username,
+            CandidateProfile.visibility == "public"
+        )
+        .first()
+    )
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    return {
+        "full_name": profile.user.full_name,
+        "headline": profile.resume_headline,
+        "summary": profile.profile_summary,
+        "location": profile.current_location,
+        "experience": profile.experiences,
+        "education": profile.educations,
+        "skills": [
+            {
+                "name": cs.skill.name,
+                "proficiency": cs.proficiency
+            }
+            for cs in profile.skills
+        ],
+        "projects": profile.projects,
+        "profile_picture": profile.profile_picture,
+    }
+
+@router.get(
+    "/recruiter/candidate/{candidate_id}",
+    summary="Recruiter view of candidate profile"
+)
+def recruiter_view_profile(
+    candidate_id: UUID,
+    db: Session = Depends(get_db),
+    recruiter=Depends(get_current_recruiter)
+):
+    profile = db.query(CandidateProfile).filter(
+        CandidateProfile.id == candidate_id,
+        CandidateProfile.visibility.in_(["public", "recruiter_only"])
+    ).first()
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not visible")
+
+    # 🔍 Track profile view
+    view = ProfileView(
+        candidate_id=profile.id,
+        recruiter_id=recruiter.id
+    )
+    db.add(view)
+    db.commit()
+
+    return {
+        "name": profile.user.full_name,
+        "headline": profile.resume_headline,
+        "skills": profile.skills,
+        "experience": profile.experiences,
+        "education": profile.educations,
+        "resume_available": bool(profile.resumes),
+    }
+
+@router.get(
+    "/username-available/{username}",
+    summary="Check if public username is available"
+)
+def check_username_availability(
+    username: str,
+    db: Session = Depends(get_db)
+):
+    existing = db.query(CandidateProfile).filter(
+        func.lower(CandidateProfile.public_username) == username.lower()
+    ).first()
+
+    return {
+        "username": username,
+        "available": existing is None
+    }

@@ -1,16 +1,14 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List,Dict,Optional
 from uuid import UUID
+from pydantic import BaseModel, EmailStr,ConfigDict,Field
 
-from pydantic import BaseModel, EmailStr
-
-from app.models import (
+from .models import (
     UserRole,
     JobStatus,
     ApplicationStatus,
     InterviewStatus,
 )
-
 
 # =====================================================
 # BASE CONFIG
@@ -20,6 +18,9 @@ class BaseSchema(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# =====================================================
+# SIGNUP
+# =====================================================
 
 class CompleteSignupSchema(BaseSchema):
     sub: str
@@ -34,6 +35,7 @@ class CompleteSignupSchema(BaseSchema):
     website: Optional[str] = None
     location: Optional[str] = None
     designation: Optional[str] = None
+
 
 # =====================================================
 # USER
@@ -62,38 +64,81 @@ class UserRead(BaseSchema):
 # =====================================================
 
 class CandidateProfileBase(BaseSchema):
-    current_location: Optional[str] = None
-    preferred_location: Optional[str] = None
-    total_experience: Optional[float] = None
-    current_ctc: Optional[float] = None
-    expected_ctc: Optional[float] = None
-    profile_summary: Optional[str] = None
-    visibility: str = "public"
-
-
-class CandidateProfileCreate(CandidateProfileBase):
-    """
-    user_id is derived from authenticated user (JWT / Cognito),
-    NOT accepted from client.
-    """
-    pass
-
-
-class CandidateProfileRead(CandidateProfileBase):
-    id: UUID
-    user_id: UUID
-    full_name: str 
-    email: EmailStr
-    profile_picture: Optional[str] = None
     current_location: Optional[str]
     preferred_location: Optional[str]
     total_experience: Optional[float]
     current_ctc: Optional[float]
     expected_ctc: Optional[float]
     profile_summary: Optional[str]
+    resume_headline: Optional[str]
+    notice_period: Optional[str]
+    willing_to_relocate: Optional[bool]
+    preferred_shift: Optional[str]
+    employment_type_preference: Optional[str]
+    linkedin_url: Optional[str]
+    github_url: Optional[str]
+    portfolio_url: Optional[str]
+    visibility: str = "public"
+
+
+class CandidateProfileCreate(CandidateProfileBase):
+    """
+    user_id is derived from authenticated user
+    """
+    pass
+
+class CandidateProfileUpdate(BaseSchema):
+    current_location: Optional[str] = None
+    preferred_location: Optional[str] = None
+    total_experience: Optional[float] = None
+    current_ctc: Optional[float] = None
+    expected_ctc: Optional[float] = None
+    profile_summary: Optional[str] = None
+
+    resume_headline: Optional[str] = Field(None, max_length=200)
+    public_username: Optional[str] = Field(
+        None,
+        min_length=3,
+        max_length=30,
+        pattern="^[a-zA-Z0-9_]+$"
+    )
+    notice_period: Optional[str] = None
+    willing_to_relocate: Optional[bool] = None
+    preferred_shift: Optional[str] = None
+    employment_type_preference: Optional[str] = None
+
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+
+    visibility: Optional[str] = None
+
+class CandidateProfileRead(BaseModel):
+    id: UUID
+    user_id: UUID
+    full_name: str
+    email: str
+
+    profile_picture: Optional[str]
+    current_location: Optional[str]
+    preferred_location: Optional[str]
+    total_experience: Optional[float]
+    current_ctc: Optional[float]
+    expected_ctc: Optional[float]
+    profile_summary: Optional[str]
+    resume_headline: Optional[str]
+
+    public_username: str   # ✅ REQUIRED
+
     visibility: str
+    linkedin_url: Optional[str]
+    github_url: Optional[str]
+    portfolio_url: Optional[str]
+
+    last_active: Optional[datetime]
     is_active: bool
     created_at: datetime
+
 
 
 # =====================================================
@@ -122,7 +167,6 @@ class CandidateEducationRead(CandidateEducationBase):
 # EXPERIENCE
 # =====================================================
 
-
 class CandidateExperienceCreate(BaseSchema):
     company_name: str
     role: str
@@ -134,10 +178,8 @@ class CandidateExperienceCreate(BaseSchema):
 
 class CandidateExperienceRead(CandidateExperienceCreate):
     id: UUID
+    candidate_id: UUID
 
-# =====================================================
-# PROJECTS
-# =====================================================
 
 # =====================================================
 # PROJECTS
@@ -158,7 +200,7 @@ class CandidateProjectCreate(CandidateProjectBase):
 
 class CandidateProjectRead(CandidateProjectBase):
     id: UUID
-
+    candidate_id: UUID
 
 
 # =====================================================
@@ -190,6 +232,7 @@ class CandidateSkillCreate(CandidateSkillBase):
 
 class CandidateSkillRead(CandidateSkillBase):
     id: UUID
+    skill_id: UUID
 
 
 # =====================================================
@@ -243,11 +286,31 @@ class JobBase(BaseSchema):
     employment_type: Optional[str] = None
     status: JobStatus = JobStatus.draft
 
-class JobCreate(JobBase):
-    """
-    recruiter_id and company_id are derived from logged-in recruiter
-    """
-    pass
+
+class JobCreate(BaseSchema):
+    title: str
+    description: Optional[str] = None
+    description_file_key: Optional[str] = None
+    location: Optional[str]
+    min_experience: Optional[float]
+    max_experience: Optional[float]
+    salary_min: Optional[float]
+    salary_max: Optional[float]
+    employment_type: Optional[str]
+    skills: List[str]
+
+
+class JobUpdate(BaseSchema):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    min_experience: Optional[float] = None
+    max_experience: Optional[float] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    employment_type: Optional[str] = None
+    status: Optional[JobStatus] = None
+    skills: Optional[List[str]] = None   # 🔥 REQUIRED
 
 class JobRead(JobBase):
     id: UUID
@@ -271,6 +334,65 @@ class JobSkillCreate(BaseSchema):
 class JobSkillRead(JobSkillCreate):
     id: UUID
 
+# =====================================================
+# JOB DESCRIPTION
+# =====================================================
+
+class JobDescriptionCreate(BaseSchema):
+    title: str
+    description_text: Optional[str] = None
+    experience_level: Optional[str] = None
+    job_type: Optional[str] = None
+    location: Optional[str] = None
+    skill_ids: Optional[list[UUID]] = []
+
+
+class JobDescriptionRead(BaseSchema):
+    id: UUID
+    title: str
+    description_text: Optional[str]
+    description_file_key: Optional[str]
+    experience_level: Optional[str]
+    job_type: Optional[str]
+    location: Optional[str]
+    is_active: bool
+    created_at: datetime
+
+class JobResponse(BaseModel):
+    id: UUID
+    title: str
+    description: str
+    description_file_key: Optional[str] = None
+    location: Optional[str]
+    min_experience: Optional[float]
+    max_experience: Optional[float]
+    salary_min: Optional[float]
+    salary_max: Optional[float]
+    employment_type: Optional[str]
+
+    model_config = ConfigDict(from_attributes=True)
+
+# =====================================================
+# PROFILE ANALYTICS
+# =====================================================
+
+class ProfileCompletion(BaseSchema):
+    percentage: int
+    missing_sections: list[str]
+    suggestions: list[str]
+    is_complete: bool
+    score_breakdown: dict[str, int]
+
+
+class ProfileAnalytics(BaseModel):
+    profile_views: int
+    recent_views: int
+    total_applications: int
+    saved_jobs: int
+    application_breakdown: Dict[str, int]
+    profile_completion: int
+    profile_score: int
+
 
 # =====================================================
 # RESUME
@@ -278,7 +400,7 @@ class JobSkillRead(JobSkillCreate):
 
 class ResumeCreate(BaseSchema):
     resume_s3_key: str
-    is_primary: bool = True   # ✅ MATCHES DB DEFAULT
+    is_primary: bool = True
 
 
 class ResumeRead(BaseSchema):
@@ -288,6 +410,10 @@ class ResumeRead(BaseSchema):
     is_primary: bool
     uploaded_at: datetime
 
+
+# =====================================================
+# APPLICATION
+# =====================================================
 
 # =====================================================
 # APPLICATION
@@ -308,6 +434,7 @@ class ApplicationRead(BaseSchema):
     applied_at: datetime
 
 
+
 # =====================================================
 # INTERVIEW
 # =====================================================
@@ -325,35 +452,51 @@ class InterviewRead(BaseSchema):
     meeting_link: Optional[str]
     status: InterviewStatus
     created_at: datetime
-
-   
+    
+    
 class ScheduleInterviewRequest(BaseModel):
     application_id: UUID
-    schedule_mode: str          
-    interview_type: str        
+
+    # 🔑 NEW
+    schedule_mode: str          # "direct" | "slots"
+
+    interview_type: str         # online | offline | telephone
+
+    # DIRECT MODE
     scheduled_at: Optional[datetime] = None
+
+    # SLOT MODE
     interview_date: Optional[str] = None
+
     interviewer_ids: List[UUID]
+
     meeting_link: Optional[str] = None
     location: Optional[str] = None
 
-# =====================================================
-# PROFILE ANALYTICS
-# =====================================================
+class InterviewerCreate(BaseModel):
+    name: str
+    email: EmailStr
+    
+    
+class JobApplicationQuestionCreate(BaseModel):
+    question_text: str
+    field_type: str                 # text | textarea | select | boolean
+    options: Optional[List[str]] = None
+    is_required: bool = False
+    order_index: int = 0
+    
+class JobApplicationQuestionRead(BaseModel):
+    id: UUID
+    question_text: str
+    field_type: str
+    options: Optional[List[str]]
+    is_required: bool
+    order_index: int
 
-class ProfileCompletion(BaseSchema):
-    percentage: int
-    missing_sections: list[str]
-    suggestions: list[str]
-    is_complete: bool
-    score_breakdown: dict[str, int]
-
-
-class ProfileAnalytics(BaseSchema):
-    profile_views: int
-    recent_views: int
-    total_applications: int
-    saved_jobs: int
-    application_breakdown: dict[str, int]
-    profile_completion: int
-    profile_score: int
+    class Config:
+        from_attributes = True
+        
+        
+class JobApplicationAnswerCreate(BaseModel):
+    question_id: UUID
+    answer: str
