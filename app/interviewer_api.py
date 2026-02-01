@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from .schemas import InterviewerCreate       
 
 from .db import get_db
 from .models import Interviewer
@@ -42,3 +43,36 @@ def get_interviewers(
         }
         for i in db.query(Interviewer).all()
     ]
+
+
+
+@router.post("/", status_code=201)
+def create_interviewer(
+    payload: InterviewerCreate,
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+):
+    payload_user = decode_cognito_token(token)
+
+    # (optional) restrict to recruiter/admin
+    existing = db.query(Interviewer).filter(
+        Interviewer.email == payload.email
+    ).first()
+
+    if existing:
+        raise HTTPException(400, "Interviewer with this email already exists")
+
+    interviewer = Interviewer(
+        name=payload.name,
+        email=payload.email
+    )
+
+    db.add(interviewer)
+    db.commit()
+    db.refresh(interviewer)
+
+    return {
+        "id": str(interviewer.id),
+        "name": interviewer.name,
+        "email": interviewer.email
+    }
