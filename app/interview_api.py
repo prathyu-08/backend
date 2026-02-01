@@ -25,7 +25,8 @@ router = APIRouter(prefix="/interviews", tags=["Interviews"])
 PORTAL_URL = "http://localhost:8501"  # 👈 change when deployed
 
 # =====================================================
-# 📅 CREATE INTERVIEW (SEND SLOTS FLOW)
+# 📅 CREATE INTERVIEW (DIRECT + SLOT)
+# =====================================================
 @router.post("/schedule")
 def schedule_interview(
     payload: ScheduleInterviewRequest,
@@ -34,6 +35,7 @@ def schedule_interview(
 ):
     payload_token = decode_cognito_token(token)
 
+    # ---------------- AUTH ----------------
     recruiter_user = db.query(User).filter(
         User.cognito_sub == payload_token["sub"],
         User.role == UserRole.recruiter
@@ -42,6 +44,7 @@ def schedule_interview(
     if not recruiter_user:
         raise HTTPException(403, "Only recruiters can schedule interviews")
 
+    # ---------------- APPLICATION ----------------
     application = db.query(Application).filter(
         Application.id == payload.application_id
     ).first()
@@ -55,29 +58,25 @@ def schedule_interview(
     if application.interview:
         raise HTTPException(400, "Interview already exists")
 
-    if payload.interview_type not in ["online", "offline", "telephone"]:
-        raise HTTPException(400, "Invalid interview type")
-
+    # ---------------- CREATE INTERVIEW ----------------
     interview = Interview(
         application_id=application.id,
         interview_type=payload.interview_type,
         meeting_link=payload.meeting_link,
         location=payload.location,
-        scheduled_at=None,
+        scheduled_at=payload.scheduled_at if payload.schedule_mode == "direct" else None,
+        status="scheduled",
     )
 
-    # 🔑 DIRECT MODE
-    if payload.schedule_mode == "direct":
-        if not payload.scheduled_at:
-            raise HTTPException(400, "scheduled_at required for direct interview")
-        interview.scheduled_at = payload.scheduled_at
-
     db.add(interview)
+
+    # 🔥 CRITICAL: MOVE APPLICATION TO INTERVIEW STAGE
     application.status = ApplicationStatus.interview
+
     db.commit()
     db.refresh(interview)
 
-    # Map interviewers
+    # ---------------- INTERVIEWERS ----------------
     for interviewer_id in payload.interviewer_ids:
         db.add(
             InterviewInterviewer(
@@ -85,25 +84,41 @@ def schedule_interview(
                 interviewer_id=interviewer_id
             )
         )
+
     db.commit()
     db.refresh(interview)
 
-    # --------------------------------------------------
-    # 📩 DIRECT MODE EMAIL + RESUME
-    # --------------------------------------------------
+    # ---------------- 🔔 NOTIFICATION ----------------
+    from .notification_utils import create_notification
+
+    create_notification(
+        db,
+        application.candidate.user.id,
+        "Interview Scheduled",
+        f"Your interview for '{application.job.title}' has been scheduled."
+    )
+
+    # ---------------- DIRECT INTERVIEW EMAIL ----------------
     if payload.schedule_mode == "direct":
         from .email_utils import get_resume_bytes, send_email_with_attachment
+        from .calendar_utils import generate_interview_ics
 
         candidate = application.candidate.user
         job = application.job
 
         resume = application.resume
         resume_bytes = None
-        filename = None
+        resume_filename = None
 
         if resume:
             resume_bytes = get_resume_bytes(resume.resume_s3_key)
-            filename = resume.original_filename or "resume.pdf"
+            resume_filename = resume.original_filename or "resume.pdf"
+
+        ics_content = generate_interview_ics(
+            title=f"Interview – {job.title}",
+            description=f"Interview Type: {interview.interview_type}\nMeeting: {interview.meeting_link or interview.location}",
+            start_time=interview.scheduled_at,
+        )
 
         subject = f"Interview Scheduled – {job.title}"
         body = f"""
@@ -115,8 +130,10 @@ Job Role: {job.title}
 Interview Type: {interview.interview_type.title()}
 Date & Time: {interview.scheduled_at}
 
-Interview Details:
+Meeting Details:
 {interview.meeting_link or interview.location}
+
+Calendar invite is attached.
 
 Regards,
 Recruitment Team
@@ -125,24 +142,34 @@ Recruitment Team
         # Candidate
         if resume_bytes:
             send_email_with_attachment(
-                candidate.email, subject, body, resume_bytes, filename
+                candidate.email,
+                subject,
+                body,
+                resume_bytes,
+                resume_filename
             )
-        else:
-            send_email(candidate.email, subject, body)
+
+        send_email_with_attachment(
+            candidate.email,
+            subject,
+            body,
+            ics_content.encode("utf-8"),
+            "interview.ics"
+        )
 
         # Interviewers
         for interviewer in interview.interviewers:
-            if resume_bytes:
-                send_email_with_attachment(
-                    interviewer.email, subject, body, resume_bytes, filename
-                )
-            else:
-                send_email(interviewer.email, subject, body)
+            send_email_with_attachment(
+                interviewer.email,
+                subject,
+                body,
+                ics_content.encode("utf-8"),
+                "interview.ics"
+            )
 
     return {
         "message": "Interview scheduled successfully",
         "interview_id": str(interview.id),
-        "schedule_mode": payload.schedule_mode
     }
 
 # =====================================================
@@ -151,21 +178,22 @@ Recruitment Team
 @router.put("/reschedule/{application_id}")
 def reschedule_interview(
     application_id: UUID,
-    new_scheduled_at: datetime,
-    new_meeting_link: str | None = None,
-
+    new_scheduled_at: str,   # ISO datetime string
     db: Session = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ):
     payload = decode_cognito_token(token)
 
-    user = db.query(User).filter(
-        User.cognito_sub == payload["sub"]
+    # ---------------- AUTH ----------------
+    recruiter = db.query(User).filter(
+        User.cognito_sub == payload["sub"],
+        User.role == UserRole.recruiter
     ).first()
 
-    if not user or user.role != UserRole.recruiter:
+    if not recruiter:
         raise HTTPException(403, "Only recruiters can reschedule interviews")
 
+    # ---------------- FETCH INTERVIEW ----------------
     interview = db.query(Interview).filter(
         Interview.application_id == application_id
     ).first()
@@ -173,57 +201,138 @@ def reschedule_interview(
     if not interview:
         raise HTTPException(404, "Interview not found")
 
-    old_date = interview.scheduled_at
-    interview.scheduled_at = new_scheduled_at
+    application = interview.application
 
-    if interview.interview_type == "online":
-        interview.meeting_link = new_meeting_link or interview.meeting_link
+    # ---------------- VALIDATE STATE ----------------
+    if application.status != ApplicationStatus.interview:
+        raise HTTPException(
+            400,
+            "Only interviews in interview stage can be rescheduled"
+        )
+
+    # ---------------- PARSE DATETIME SAFELY ----------------
+    from datetime import datetime
+    try:
+        new_dt = datetime.fromisoformat(new_scheduled_at)
+    except ValueError:
+        raise HTTPException(400, "Invalid datetime format")
+
+    # ---------------- UPDATE INTERVIEW ----------------
+    interview.scheduled_at = new_dt
+    interview.status = "rescheduled"
 
     db.commit()
     db.refresh(interview)
 
-    application = interview.application
-    candidate = application.candidate.user
+    # ---------------- NOTIFICATION ----------------
+    from .notification_utils import create_notification
 
-    resume = application.resume
-    resume_bytes = None
-    filename = None
-
-    if resume:
-        resume_bytes = get_resume_bytes(resume.resume_s3_key)
-        filename = resume.original_filename or "resume.pdf"
-
-    subject, body = interview_rescheduled(
-        candidate_name=candidate.full_name,
-        job_title=application.job.title,
-        interview_type=interview.interview_type,
-        old_datetime=old_date,
-        new_datetime=new_scheduled_at,
-        meeting_link=interview.meeting_link,
-        location=interview.location,
-        phone_number=interview.phone_number,
+    create_notification(
+        db,
+        application.candidate.user.id,
+        "Interview Rescheduled",
+        f"Your interview for '{application.job.title}' has been rescheduled to "
+        f"{new_dt.strftime('%d %b %Y, %I:%M %p')}."
     )
 
-    if resume_bytes:
+    # ---------------- EMAIL + CALENDAR ----------------
+    from .calendar_utils import generate_interview_ics
+    from .email_utils import send_email_with_attachment
+
+    candidate = application.candidate.user
+
+    ics_content = generate_interview_ics(
+        title=f"Interview – {application.job.title}",
+        description="Interview rescheduled",
+        start_time=new_dt,
+    )
+
+    subject = f"Interview Rescheduled – {application.job.title}"
+    body = f"""
+Hi {candidate.full_name},
+
+Your interview for the position of "{application.job.title}" has been rescheduled.
+
+🔁 Updated Interview Details
+----------------------------
+Interview Type: {interview.interview_type.title()}
+New Date & Time: {new_dt.strftime('%d %b %Y, %I:%M %p')}
+
+{"Meeting Link: " + interview.meeting_link if interview.meeting_link else ""}
+{"Interview Location: " + interview.location if interview.location else ""}
+
+The updated calendar invite is attached to this email.
+
+Regards,
+Recruitment Team
+"""
+
+    # Candidate email
+    send_email_with_attachment(
+        candidate.email,
+        subject,
+        body,
+        ics_content.encode("utf-8"),
+        "interview.ics"
+    )
+
+    # Interviewers email
+    for interviewer in interview.interviewers:
         send_email_with_attachment(
-            to_email=candidate.email,
-            subject=subject,
-            body=body,
-            file_bytes=resume_bytes,
-            filename=filename,
-        )
-    else:
-        send_email(
-            to_email=candidate.email,
-            subject=subject,
-            body=body,
+            interviewer.email,
+            subject,
+            body,
+            ics_content.encode("utf-8"),
+            "interview.ics"
         )
 
     return {"message": "Interview rescheduled successfully"}
 
+# =====================================================
+# 🔧 SHARED CANCEL LOGIC (FINAL)
+# =====================================================
+def _cancel_interview(
+    *,
+    application_id: UUID,
+    cancelled_by: str,  # "recruiter" or "candidate"
+    db: Session,
+):
+    interview = db.query(Interview).filter(
+        Interview.application_id == application_id
+    ).first()
+
+    if not interview:
+        raise HTTPException(404, "Interview not found")
+
+    # Cancel interview
+    interview.status = "cancelled"
+    interview.scheduled_at = None
+
+    # ✅ FINAL RULE: CANCEL = REJECT
+    interview.application.status = ApplicationStatus.rejected
+
+    db.commit()
+
+    # 🔔 Notification
+    from .notification_utils import create_notification
+
+    candidate = interview.application.candidate.user
+
+    create_notification(
+        db,
+        candidate.id,
+        "Interview Cancelled",
+        f"Your interview was cancelled by the {cancelled_by}. "
+        "Your application has been marked as rejected."
+    )
+
+    return {
+        "message": f"Interview cancelled by {cancelled_by}",
+        "new_status": "rejected"
+    }
 
 # =====================================================
-# ❌ CANCEL INTERVIEW (RECRUITER)
+# ❌ CANCEL INTERVIEW – RECRUITER
 # =====================================================
 @router.put("/cancel/{application_id}")
 def cancel_interview_by_recruiter(
@@ -233,41 +342,23 @@ def cancel_interview_by_recruiter(
 ):
     payload = decode_cognito_token(token)
 
-    recruiter_user = db.query(User).filter(
+    recruiter = db.query(User).filter(
         User.cognito_sub == payload["sub"],
-        User.role == UserRole.recruiter
+        User.role == UserRole.recruiter,
     ).first()
 
-    if not recruiter_user:
+    if not recruiter:
         raise HTTPException(403, "Only recruiters can cancel interviews")
 
-    interview = db.query(Interview).filter(
-        Interview.application_id == application_id
-    ).first()
-
-    if not interview:
-        raise HTTPException(404, "Interview not found")
-
-    # ---------------- CANCEL ----------------
-    interview.status = "cancelled"
-    interview.scheduled_at = None
-    interview.application.status = ApplicationStatus.rejected
-
-    db.commit()
-
-    # ---------------- EMAIL ALL ----------------
-    notify_all_on_cancel(
-        interview=interview,
-        cancelled_by="recruiter"
+    return _cancel_interview(
+        application_id=application_id,
+        cancelled_by="recruiter",
+        db=db,
     )
-
-    return {
-        "message": "Interview cancelled successfully and notifications sent"
-    }
 
 
 # =====================================================
-# ❌ CANCEL INTERVIEW (CANDIDATE)
+# ❌ CANCEL INTERVIEW – CANDIDATE
 # =====================================================
 @router.put("/cancel-by-candidate/{application_id}")
 def cancel_interview_by_candidate(
@@ -277,37 +368,19 @@ def cancel_interview_by_candidate(
 ):
     payload = decode_cognito_token(token)
 
-    candidate_user = db.query(User).filter(
+    candidate = db.query(User).filter(
         User.cognito_sub == payload["sub"],
-        User.role == UserRole.user
+        User.role == UserRole.user,
     ).first()
 
-    if not candidate_user:
+    if not candidate:
         raise HTTPException(403, "Only candidates can cancel interviews")
 
-    interview = db.query(Interview).filter(
-        Interview.application_id == application_id
-    ).first()
-
-    if not interview:
-        raise HTTPException(404, "Interview not found")
-
-    # ---------------- CANCEL ----------------
-    interview.status = "cancelled"
-    interview.scheduled_at = None
-    interview.application.status = ApplicationStatus.rejected
-
-    db.commit()
-
-    # ---------------- EMAIL ALL ----------------
-    notify_all_on_cancel(
-        interview=interview,
-        cancelled_by="candidate"
+    return _cancel_interview(
+        application_id=application_id,
+        cancelled_by="candidate",
+        db=db,
     )
-
-    return {
-        "message": "Interview cancelled successfully and notifications sent"
-    }
 
 @router.post("/slots/{interview_id}")
 def add_interview_slots(
@@ -439,7 +512,6 @@ def select_interview_slot(
     if interview.scheduled_at:
         raise HTTPException(400, "Interview already confirmed")
 
-    # Unselect all
     db.query(InterviewSlot).filter(
         InterviewSlot.interview_id == interview.id
     ).update({"is_selected": False})
@@ -450,63 +522,58 @@ def select_interview_slot(
     db.commit()
     db.refresh(interview)
 
-    # ---------------- DETAILS ----------------
-    details = f"""
-Job Role: {application.job.title}
-Candidate Name: {candidate_user.full_name}
-Interview Type: {interview.interview_type.title()}
-Date & Time: {interview.scheduled_at}
-"""
-
-    if interview.interview_type == "online":
-        details += f"\nMeeting Link:\n{interview.meeting_link}"
-    elif interview.interview_type == "offline":
-        details += f"\nLocation:\n{interview.location}"
-    else:
-        details += "\nInterview via phone call"
-
-    # ---------------- RESUME ----------------
     from .email_utils import get_resume_bytes, send_email_with_attachment
+    from .calendar_utils import generate_interview_ics
 
     resume = application.resume
     resume_bytes = None
-    filename = None
+    resume_filename = None
 
     if resume:
         resume_bytes = get_resume_bytes(resume.resume_s3_key)
-        filename = resume.original_filename or "resume.pdf"
+        resume_filename = resume.original_filename or "resume.pdf"
+
+    ics_content = generate_interview_ics(
+        title=f"Interview – {application.job.title}",
+        description=f"Interview Type: {interview.interview_type}\nMeeting: {interview.meeting_link or interview.location}",
+        start_time=interview.scheduled_at,
+    )
 
     subject = f"Interview Confirmed – {application.job.title}"
 
     body = f"""
 Hi {candidate_user.full_name},
 
-Your interview slot has been confirmed 🎉
+Your interview slot has been confirmed.
 
-Interview Details
------------------
-{details}
+Job Role: {application.job.title}
+Interview Type: {interview.interview_type.title()}
+Date & Time: {interview.scheduled_at}
+
+Calendar invite is attached.
 
 Regards,
 Recruitment Team
 """
 
-    # Candidate email
+    # Candidate
     if resume_bytes:
         send_email_with_attachment(
-            candidate_user.email, subject, body, resume_bytes, filename
+            candidate_user.email, subject, body,
+            resume_bytes, resume_filename
         )
-    else:
-        send_email(candidate_user.email, subject, body)
 
-    # Interviewers email
+    send_email_with_attachment(
+        candidate_user.email, subject, body,
+        ics_content.encode("utf-8"), "interview.ics"
+    )
+
+    # Interviewers
     for interviewer in interview.interviewers:
-        if resume_bytes:
-            send_email_with_attachment(
-                interviewer.email, subject, body, resume_bytes, filename
-            )
-        else:
-            send_email(interviewer.email, subject, body)
+        send_email_with_attachment(
+            interviewer.email, subject, body,
+            ics_content.encode("utf-8"), "interview.ics"
+        )
 
     return {"message": "Interview slot confirmed successfully"}
 
