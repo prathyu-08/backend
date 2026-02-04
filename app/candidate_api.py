@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from uuid import UUID
 from typing import List, Optional
 from .db import get_db
-from .utils.s3 import upload_profile_picture, upload_resume as upload_resume_s3, delete_file
+from .utils.s3 import upload_profile_picture, upload_resume as upload_resume_s3, delete_file, generate_presigned_url 
 from .models import (
     User,
     CandidateProfile,
@@ -13,6 +13,7 @@ from .models import (
     CandidateExperience,
     CandidateSkill,
     Skill,
+    Job,
     CandidateProject,
     ProfileView,
     Resume,
@@ -35,24 +36,20 @@ from .schemas import (
     ProfileCompletion,
     CandidateProfileUpdate
 )
-from .auth_api import get_current_candidate, get_current_recruiter
+
+
+from .auth_api import get_current_candidate, get_current_recruiter,oauth2_scheme,decode_cognito_token
 router = APIRouter(prefix="/candidate", tags=["Candidate"])
 
 
 # =====================================================
 # DEPENDENCIES & HELPERS
 # =====================================================
-
 def get_candidate_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_candidate)
 ) -> CandidateProfile:
-    """Get candidate profile for the authenticated user."""
-    if current_user.role != UserRole.user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Candidate access only"
-        )
+
     profile = db.query(CandidateProfile).options(
         joinedload(CandidateProfile.user),
         joinedload(CandidateProfile.educations),
@@ -63,12 +60,26 @@ def get_candidate_profile(
     ).filter(
         CandidateProfile.user_id == current_user.id
     ).first()
-    
+
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate profile not found"
-        )
+        raise HTTPException(status_code=404, detail="Candidate profile not found")
+
+    # ✅ GUARANTEE public_username FOR ALL
+    if not profile.public_username:
+        base = profile.user.full_name.lower().replace(" ", "")
+        candidate_username = base
+        counter = 1
+
+        while db.query(CandidateProfile).filter(
+            CandidateProfile.public_username == candidate_username
+        ).first():
+            candidate_username = f"{base}{counter}"
+            counter += 1
+
+        profile.public_username = candidate_username
+        db.commit()
+        db.refresh(profile)
+
     return profile
 
 
@@ -90,6 +101,7 @@ def get_profile(
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email,
+        "phone_number": user.phone_number,
         "profile_picture": profile.profile_picture,
         "current_location": profile.current_location,
         "preferred_location": profile.preferred_location,
@@ -143,6 +155,9 @@ def update_profile(
         }
 
         update_data = payload.model_dump(exclude_unset=True)
+        user = profile.user
+        if "phone_number" in update_data:
+            user.phone_number = update_data.pop("phone_number")
         if "public_username" in update_data:
             existing = db.query(CandidateProfile).filter(
                 func.lower(CandidateProfile.public_username) == update_data["public_username"].lower(),
@@ -176,13 +191,12 @@ def update_profile(
         db.commit()
         db.refresh(profile)
 
-        user = profile.user
-
         return {
             "id": profile.id,
             "user_id": user.id,
             "full_name": user.full_name,
             "email": user.email,
+            "phone_number": user.phone_number,
             "profile_picture": profile.profile_picture,
             "current_location": profile.current_location,
             "preferred_location": profile.preferred_location,
@@ -947,99 +961,90 @@ def delete_resume(
 # =====================================================
 # PROFILE COMPLETION
 # =====================================================
-
 def calculate_profile_completion(profile: CandidateProfile) -> dict:
-    """Calculate profile completion percentage and suggestions."""
     score = 0
     missing = []
     suggestions = []
-    
-    # Basic profile (20 points)
+
+    # ---------------- BASIC PROFILE (20)
     basic_fields = [
-        ("current_location", "current location"),
-        ("profile_summary", "profile summary"),
-        ("resume_headline", "resume headline"),
+        profile.current_location,
+        profile.profile_summary,
+        profile.resume_headline,
     ]
-    
-    basic_complete = True
-    for field, field_name in basic_fields:
-        if not getattr(profile, field):
-            basic_complete = False
-            suggestions.append(f"Add your {field_name}")
-    
-    if basic_complete and profile.total_experience is not None:
+    if all(basic_fields):
         score += 20
     else:
-        missing.append("Complete basic profile info")
-    
-    # Education (10 points)
-    if profile.educations and len(profile.educations) > 0:
+        missing.append("Basic profile details")
+        suggestions.append("Complete location, summary, and resume headline")
+
+    # ---------------- EDUCATION (10)
+    if profile.educations:
         score += 10
     else:
-        missing.append("Add education")
+        missing.append("Education")
         suggestions.append("Add at least one education record")
-    
-    # Experience (20 points)
-    if profile.experiences and len(profile.experiences) > 0:
+
+    # ---------------- EXPERIENCE OR FRESHER PROJECTS (20)
+    if profile.experiences:
         score += 20
+    elif profile.projects:
+        score += 20
+        suggestions.append("Add work experience when available")
     else:
-        missing.append("Add work experience")
-        suggestions.append("Add your work experience or internships")
-    
-    # Skills (15 points)
-    skill_count = len(profile.skills) if profile.skills else 0
-    if skill_count >= 5:
+        missing.append("Experience / Projects")
+        suggestions.append("Add experience or at least one project")
+
+    # ---------------- SKILLS (15)
+    skill_count = len(profile.skills or [])
+    if skill_count >= 3:
         score += 15
     elif skill_count > 0:
-        score += 7
-        suggestions.append(f"Add {5 - skill_count} more skills (recommended: 5+)")
+        score += 10
+        suggestions.append("Add at least 3 skills")
     else:
-        missing.append("Add skills")
-        suggestions.append("Add at least 5 key skills")
-    
-    # Projects (15 points)
-    if profile.projects and len(profile.projects) > 0:
+        missing.append("Skills")
+        suggestions.append("Add skills to your profile")
+
+    # ---------------- PROJECTS (15)
+    if profile.projects:
         score += 15
     else:
-        missing.append("Add projects")
-        suggestions.append("Showcase your projects and work")
-    
-    
-    # Resume (10 points)
-    if profile.resumes and len(profile.resumes) > 0:
+        missing.append("Projects")
+        suggestions.append("Add projects to showcase your work")
+
+    # ---------------- RESUME (10)
+    if profile.resumes:
         score += 10
     else:
-        missing.append("Upload resume")
-        suggestions.append("Upload your latest resume")
-    
-    # Profile picture (5 points)
+        missing.append("Resume")
+        suggestions.append("Upload your resume")
+
+    # ---------------- PROFILE PICTURE (5)
     if profile.profile_picture:
-        score += 5
+        score += 10
     else:
-        suggestions.append("Add a professional profile picture")
-    
-    # Career preferences (5 points)
-    if profile.expected_ctc and profile.preferred_location:
-        score += 5
-    else:
-        suggestions.append("Set your career preferences (expected CTC and location)")
-    
+        suggestions.append("Add a professional profile photo")
+
+
+
     return {
-        "percentage": min(score, 100),
+        "percentage": score,  # already max 100
         "missing_sections": missing,
-        "suggestions": suggestions[:5],  # Limit to top 5 suggestions
-        "is_complete": score >= 80,  # Consider 80% as complete
+        "suggestions": suggestions[:5],
+        "is_complete": score == 100,
         "score_breakdown": {
-            "basic_profile": 20,
+            "basic": 20,
             "education": 10,
             "experience": 20,
             "skills": 15,
             "projects": 15,
             "resume": 10,
-            "profile_picture": 5,
-            "career_preferences": 5
-        }
+            "profile_picture": 10,  # shifted weight
+        },
     }
+
+
 
 
 @router.get(
@@ -1156,9 +1161,12 @@ def public_profile(
 
     return {
         "full_name": profile.user.full_name,
+        "email": profile.user.email,              # ✅ ADD THIS
         "headline": profile.resume_headline,
         "summary": profile.profile_summary,
+        "experience_years": profile.total_experience,
         "location": profile.current_location,
+        "phone_number": profile.user.phone_number,
         "experience": profile.experiences,
         "education": profile.educations,
         "skills": [
@@ -1172,39 +1180,7 @@ def public_profile(
         "profile_picture": profile.profile_picture,
     }
 
-@router.get(
-    "/recruiter/candidate/{candidate_id}",
-    summary="Recruiter view of candidate profile"
-)
-def recruiter_view_profile(
-    candidate_id: UUID,
-    db: Session = Depends(get_db),
-    recruiter=Depends(get_current_recruiter)
-):
-    profile = db.query(CandidateProfile).filter(
-        CandidateProfile.id == candidate_id,
-        CandidateProfile.visibility.in_(["public", "recruiter_only"])
-    ).first()
 
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not visible")
-
-    # 🔍 Track profile view
-    view = ProfileView(
-        candidate_id=profile.id,
-        recruiter_id=recruiter.id
-    )
-    db.add(view)
-    db.commit()
-
-    return {
-        "name": profile.user.full_name,
-        "headline": profile.resume_headline,
-        "skills": profile.skills,
-        "experience": profile.experiences,
-        "education": profile.educations,
-        "resume_available": bool(profile.resumes),
-    }
 
 @router.get(
     "/username-available/{username}",
@@ -1222,3 +1198,219 @@ def check_username_availability(
         "username": username,
         "available": existing is None
     }
+# =====================================================
+# RECRUITER – VIEW CANDIDATE PROFILE (TEAM SAFE)
+# =====================================================
+@router.get("/candidate/{candidate_id}")
+def get_candidate_profile_for_recruiter(
+    candidate_id: UUID,
+    application_id: UUID,   # ✅ REQUIRED
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+):
+    # ---------------- AUTH ----------------
+    payload = decode_cognito_token(token)
+
+    recruiter = (
+        db.query(User)
+        .filter(
+            User.cognito_sub == payload["sub"],
+            User.role == UserRole.recruiter,
+        )
+        .first()
+    )
+
+    if not recruiter:
+        raise HTTPException(403, "Recruiter only")
+
+    # ---------------- FETCH CANDIDATE ----------------
+    candidate = (
+        db.query(CandidateProfile)
+        .options(
+            joinedload(CandidateProfile.user),
+            joinedload(CandidateProfile.educations),
+            joinedload(CandidateProfile.experiences),
+            joinedload(CandidateProfile.projects),
+            joinedload(CandidateProfile.skills).joinedload(CandidateSkill.skill),
+        )
+        .filter(CandidateProfile.id == candidate_id)
+        .first()
+    )
+
+    if not candidate:
+        raise HTTPException(404, "Candidate not found")
+
+    # ---------------- FETCH APPLICATION + RESUME ----------------
+
+    view = ProfileView(
+        candidate_id=candidate.id,
+    )
+    db.add(view)
+    db.commit()
+    application = (
+        db.query(Application)
+        .join(Resume)
+        .filter(
+            Application.id == application_id,
+            Application.candidate_id == candidate.id,
+        )
+        .first()
+    )
+
+    resume = None
+    if application and application.resume:
+        resume = {
+            "resume_id": application.resume.id,
+            "filename": application.resume.original_filename,
+        }
+
+    return {
+        "candidate": {
+            "id": candidate.id,
+            "profile_picture": candidate.profile_picture,
+            "full_name": candidate.user.full_name,
+            "email": candidate.user.email,
+            "phone": candidate.user.phone_number,
+            "location": candidate.current_location,
+            
+            "profile_summary": candidate.profile_summary,
+            "total_experience": candidate.total_experience,
+            "notice_period": candidate.notice_period,
+        },
+
+        "skills": [
+            {
+                "name": cs.skill.name,
+                "proficiency": cs.proficiency,
+            }
+            for cs in candidate.skills
+        ],
+
+        "education": [
+            {
+                "institution": e.institution,
+                "degree": e.degree,
+                "field": e.field_of_study,
+                "start_year": e.start_year,
+                "end_year": e.end_year,
+            }
+            for e in candidate.educations
+        ],
+
+        "experience": [
+            {
+                "company": exp.company_name,
+                "role": exp.role,
+                "start_date": exp.start_date,
+                "end_date": exp.end_date,
+                "description": exp.description,
+            }
+            for exp in candidate.experiences
+        ],
+
+        "projects": [
+            {
+                "title": p.title,
+                "description": p.description,
+                "technologies": p.technologies_used,
+            }
+            for p in candidate.projects
+        ],
+
+        # ✅ CORRECT PLACE
+        "resume": resume,
+    }
+
+    
+    
+    
+@router.get("/resume/access/application/{application_id}")
+def access_application_resume(
+    application_id: UUID,
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+):
+    payload = decode_cognito_token(token)
+
+    recruiter = (
+        db.query(User)
+        .filter(
+            User.cognito_sub == payload["sub"],
+            User.role == UserRole.recruiter,
+        )
+        .first()
+    )
+
+    if not recruiter:
+        raise HTTPException(403, "Recruiter only")
+
+    application = (
+        db.query(Application)
+        .join(Resume)
+        .filter(Application.id == application_id)
+        .first()
+    )
+
+    if not application:
+        raise HTTPException(404, "Application not found")
+
+    resume = application.resume
+
+    # generate signed url (example)
+    if not resume or not resume.resume_s3_key:
+        raise HTTPException(404, "Resume file not found")
+
+    url = generate_presigned_url(resume.resume_s3_key)
+
+    return {
+        "resume_id": resume.id,
+        "filename": resume.original_filename,
+        "url": url,
+    }
+
+@router.get("/media/profile-picture/{s3_key:path}")
+def access_profile_picture_for_recruiter(
+    s3_key: str,
+    application_id: UUID,
+    db: Session = Depends(get_db),
+    recruiter=Depends(get_current_recruiter),
+):
+    application = (
+        db.query(Application)
+        .join(CandidateProfile)
+        .filter(
+            Application.id == application_id,
+            CandidateProfile.profile_picture == s3_key,
+        )
+        .first()
+    )
+
+    if not application:
+        raise HTTPException(403, "Not authorized to view this image")
+
+    url = generate_presigned_url(s3_key)
+    return {"url": url}
+
+@router.get("/resume/access/application/{application_id}")
+def access_resume_for_application(
+    application_id: UUID,
+    db: Session = Depends(get_db),
+    recruiter=Depends(get_current_recruiter),
+):
+    application = (
+        db.query(Application)
+        .join(Resume)
+        .filter(Application.id == application_id)
+        .first()
+    )
+
+    if not application or not application.resume:
+        raise HTTPException(404, "Resume not found")
+
+    url = generate_presigned_url(application.resume.resume_s3_key)
+
+    # optional analytics
+    application.resume.downloaded_count += 1
+    db.commit()
+
+    return {"url": url}
