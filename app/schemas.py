@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List,Dict,Optional
+from typing import Optional, List
 from uuid import UUID
 from pydantic import BaseModel, EmailStr,ConfigDict,Field
 
@@ -94,6 +94,7 @@ class CandidateProfileUpdate(BaseSchema):
     current_ctc: Optional[float] = None
     expected_ctc: Optional[float] = None
     profile_summary: Optional[str] = None
+    phone_number: Optional[str] = None
 
     resume_headline: Optional[str] = Field(None, max_length=200)
     public_username: Optional[str] = Field(
@@ -118,6 +119,7 @@ class CandidateProfileRead(BaseModel):
     user_id: UUID
     full_name: str
     email: str
+    phone_number: Optional[str]
 
     profile_picture: Optional[str]
     current_location: Optional[str]
@@ -138,8 +140,6 @@ class CandidateProfileRead(BaseModel):
     last_active: Optional[datetime]
     is_active: bool
     created_at: datetime
-
-
 
 # =====================================================
 # EDUCATION
@@ -277,7 +277,7 @@ class RecruiterRead(BaseSchema):
 
 class JobBase(BaseSchema):
     title: str
-    description: str
+    description: Optional[str] = None
     location: Optional[str] = None
     min_experience: Optional[float] = None
     max_experience: Optional[float] = None
@@ -384,12 +384,12 @@ class ProfileCompletion(BaseSchema):
     score_breakdown: dict[str, int]
 
 
-class ProfileAnalytics(BaseModel):
+class ProfileAnalytics(BaseSchema):
     profile_views: int
     recent_views: int
     total_applications: int
     saved_jobs: int
-    application_breakdown: Dict[str, int]
+    application_breakdown: dict[str, int]
     profile_completion: int
     profile_score: int
 
@@ -432,6 +432,7 @@ class ApplicationRead(BaseSchema):
     resume_id: Optional[UUID]
     status: ApplicationStatus
     applied_at: datetime
+    candidate_notes: Optional[str] = None
 
 
 

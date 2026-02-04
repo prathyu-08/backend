@@ -290,6 +290,11 @@ class Recruiter(Base):
         nullable=False,
         index=True,
     )
+    assigned_applications = relationship(
+    "Application",
+    foreign_keys="[Application.assigned_recruiter_id]"
+    )
+
 
     company_id = Column(
         UUID(as_uuid=True),
@@ -532,9 +537,6 @@ class Resume(Base):
 # APPLICATION
 # =====================================================
 
-# =====================================================
-# APPLICATION
-# =====================================================
 
 class Application(Base):
     __tablename__ = "applications"
@@ -556,22 +558,33 @@ class Application(Base):
     resume_id = Column(
         UUID(as_uuid=True),
         ForeignKey("resumes.id"),
-        nullable=True
+        nullable=False
     )
+    
 
     status = Column(
-        Enum(
-            "applied",
-            "shortlisted",
-            "interview",
-            "offered",
-            "rejected",
-            name="application_status"
-        ),
-        default="applied"
+    Enum(ApplicationStatus, name="application_status"),
+    default=ApplicationStatus.applied
     )
 
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
+    candidate_notes = Column(Text, nullable=True)
+    recruiter_notes = Column(Text, nullable=True)
+    viewed_at = Column(DateTime, nullable=True)
+    assigned_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id"),
+        nullable=True,
+        index=True
+    )
+
+    assigned_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True
+    )
+
+    assigned_at = Column(DateTime(timezone=True))
 
     # 🔥 THIS LINE FIXES YOUR ERROR
     interview = relationship(
@@ -580,11 +593,13 @@ class Application(Base):
         uselist=False,
         cascade="all, delete-orphan"
     )
-
+    
     # Existing relationships (keep them)
     job = relationship("Job", back_populates="applications")
     candidate = relationship("CandidateProfile", back_populates="applications")
     resume = relationship("Resume")
+    assigned_recruiter = relationship("Recruiter")
+
 
 # ============================
 # APPLICATION FORM 
@@ -839,4 +854,38 @@ class JobApplicationAnswer(Base):
     question = relationship(
         "JobApplicationQuestion",
         back_populates="answers",
+    )
+class ApplicationAssignmentHistory(Base):
+    __tablename__ = "application_assignment_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    application_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    from_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id"),
+        nullable=True,
+    )
+
+    to_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id"),
+        nullable=False,
+    )
+
+    moved_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+
+    moved_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
     )

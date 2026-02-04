@@ -1,14 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from jose import jwt
+from jose import jwt,JWTError, ExpiredSignatureError
 import requests
 import os
 import boto3
 from pydantic import EmailStr
 from fastapi.security import OAuth2PasswordBearer
-
-from app.db import get_db
-from app.models import User, Recruiter, Company, UserRole, CandidateProfile
+from .db import get_db
+from .models import User, Recruiter, Company, UserRole, CandidateProfile
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -26,23 +25,56 @@ cognito = boto3.client(
 # =====================================================
 # DECODE COGNITO TOKEN
 # =====================================================
+_JWKS_CACHE = None  # simple in-memory cache
+
 def decode_cognito_token(token: str) -> dict:
-    jwks_url = (
-        f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/"
-        f"{USER_POOL_ID}/.well-known/jwks.json"
-    )
-    jwks = requests.get(jwks_url).json()
+    global _JWKS_CACHE
 
-    header = jwt.get_unverified_header(token)
-    key = next(k for k in jwks["keys"] if k["kid"] == header["kid"])
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
 
-    return jwt.decode(
-        token,
-        key,
-        algorithms=["RS256"],
-        audience=CLIENT_ID,
-        issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}",
-    )
+    try:
+        # ---------------- FETCH JWKS (CACHED) ----------------
+        if _JWKS_CACHE is None:
+            jwks_url = (
+                f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/"
+                f"{USER_POOL_ID}/.well-known/jwks.json"
+            )
+            _JWKS_CACHE = requests.get(jwks_url, timeout=5).json()
+
+        header = jwt.get_unverified_header(token)
+        key = next(
+            k for k in _JWKS_CACHE["keys"]
+            if k["kid"] == header["kid"]
+        )
+
+        return jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=CLIENT_ID,
+            issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}",
+        )
+
+    except ExpiredSignatureError:
+        # 🔥 THIS is what was breaking everything
+        raise HTTPException(
+            status_code=401,
+            detail="Token expired. Please login again."
+        )
+
+    except JWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token"
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed"
+        )
+
 
 # =====================================================
 # COMPLETE LOGIN (AUTO CREATE USER / PROFILE)
