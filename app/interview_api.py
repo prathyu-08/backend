@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from datetime import datetime, date
 from .schemas import ScheduleInterviewRequest
+from .email_utils import get_resume_bytes, send_email_with_attachment
+from .calendar_utils import generate_interview_ics
 
 
 from .db import get_db
@@ -100,8 +102,6 @@ def schedule_interview(
 
     # ---------------- DIRECT INTERVIEW EMAIL ----------------
     if payload.schedule_mode == "direct":
-        from .email_utils import get_resume_bytes, send_email_with_attachment
-        from .calendar_utils import generate_interview_ics
 
         candidate = application.candidate.user
         job = application.job
@@ -139,7 +139,7 @@ Regards,
 Recruitment Team
 """
 
-        # Candidate
+        # ---------------- CANDIDATE EMAILS (EXISTING – KEEP)
         if resume_bytes:
             send_email_with_attachment(
                 candidate.email,
@@ -157,7 +157,20 @@ Recruitment Team
             "interview.ics"
         )
 
-        # Interviewers
+        # =================== ADDITION START ===================
+        # Interviewers – SEND RESUME (NEW)
+        if resume_bytes:
+            for interviewer in interview.interviewers:
+                send_email_with_attachment(
+                    interviewer.email,
+                    subject,
+                    body,
+                    resume_bytes,
+                    resume_filename
+                )
+        # =================== ADDITION END =====================
+
+        # ---------------- INTERVIEWERS EMAIL (EXISTING – KEEP)
         for interviewer in interview.interviewers:
             send_email_with_attachment(
                 interviewer.email,
