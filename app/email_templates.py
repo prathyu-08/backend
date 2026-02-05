@@ -334,3 +334,36 @@ Best regards,
 Recruitment Team
 """
     )
+def recruiter_assigned(job_title: str):
+    return (
+        f"Application Update – {job_title}",
+        f"""
+Hi,
+
+Your application for **{job_title}** has been assigned to a recruiter.
+They will review your profile shortly.
+
+Regards,
+Recruitment Team
+"""
+    )
+
+# ==================================================
+# JOB SHARED
+# ==================================================
+def job_shared(job_title: str, shared_by: str):
+    return (
+        f"Job Shared With You – {job_title}",
+        f"""
+Hi,
+
+Recruiter {shared_by} has shared a job with you on the Recruitment Portal.
+
+Job Title: {job_title}
+
+Please login to the portal to view job details.
+
+Regards,
+Recruitment Team
+"""
+    )
