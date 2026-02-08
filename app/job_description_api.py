@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from botocore.exceptions import ClientError
 import os
 import boto3
+from .pdf_text import extract_text_from_pdf
 
 from .db import get_db
 from .auth_api import oauth2_scheme, decode_cognito_token
@@ -12,6 +13,7 @@ from .models import (
     User,
     UserRole,
     JobDescription,
+    Job,
     JobDescriptionSkill,
 )
 from .schemas import JobDescriptionCreate, JobDescriptionRead
@@ -75,56 +77,67 @@ def create_job_description(
 
     db.commit()
     return jd
-
-
-# =====================================================
-# 2️⃣ UPLOAD JOB DESCRIPTION FILE (PDF / DOC / DOCX)
-# =====================================================
 @router.post("/upload")
 def upload_job_description_file(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ):
+    # ---------- AUTH ----------
     payload = decode_cognito_token(token)
 
-    # 🔒 Recruiter-only
-    if payload.get("custom:role") != "recruiter":
-        raise HTTPException(
-            status_code=403,
-            detail="Only recruiters can upload job descriptions",
-        )
+    user = db.query(User).filter(
+        User.cognito_sub == payload["sub"],
+        User.role == UserRole.recruiter,
+    ).first()
 
-    # ✅ Validate by filename (Streamlit-safe)
-    ALLOWED_EXTENSIONS = (".pdf", ".doc", ".docx")
-    filename = file.filename.lower()
+    if not user:
+        raise HTTPException(403, "Only recruiters allowed")
 
-    if not filename.endswith(ALLOWED_EXTENSIONS):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF, DOC, or DOCX files are allowed",
-        )
+    # ---------- VALIDATE FILE ----------
+    if not file.filename.lower().endswith((".pdf", ".doc", ".docx")):
+        raise HTTPException(400, "Only PDF / DOC / DOCX allowed")
 
-    # 📁 S3 file path
+    # ---------- EXTRACT TEXT ----------
+    file.file.seek(0)
+    extracted_text = extract_text_from_pdf(file.file)
+
+    if not extracted_text or not extracted_text.strip():
+        raise HTTPException(400, "No readable text found in file")
+
+    # ---------- UPLOAD TO S3 ----------
     file_key = f"job_descriptions/{uuid4()}_{file.filename}"
+    file.file.seek(0)
+    s3.upload_fileobj(
+        file.file,
+        S3_BUCKET_NAME,
+        file_key,
+        ExtraArgs={"ContentType": file.content_type},
+    )
 
-    try:
-        s3.upload_fileobj(
-            file.file,
-            S3_BUCKET_NAME,
-            file_key,
-            ExtraArgs={
-                "ContentType": file.content_type or "application/octet-stream"
-            },
+    # =====================================================
+    # 🔥 MISSING PART (THIS WAS YOUR BUG)
+    # =====================================================
+    # Save extracted text into the LATEST DRAFT JOB
+    # (matches your existing recruiter flow)
+    job = (
+        db.query(Job)
+        .filter(
+            Job.recruiter_id == user.recruiter_profile.id,
+            Job.is_active == True,
         )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"S3 upload failed: {str(e)}",
-        )
+        .order_by(Job.created_at.desc())
+        .first()
+    )
+
+    if job:
+        job.description = extracted_text
+        job.description_file_key = file_key
+        db.commit()
 
     return {
         "file_key": file_key,
-        "filename": file.filename,
+        "extracted_text": extracted_text,
     }
 
 
