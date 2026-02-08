@@ -90,22 +90,36 @@ def complete_login(
     email = payload["email"]
     role_str = payload.get("custom:role", "user")
 
-    # ---- User ----
+    # -------------------------------------------------
+    # USER (SAFE – NO FEATURE REMOVED)
+    # -------------------------------------------------
     user = db.query(User).filter(User.cognito_sub == sub).first()
+
     if not user:
-        user = User(
-            cognito_sub=sub,
-            email=email,
-            full_name=payload.get("custom:full_name", email),
-            role=UserRole(role_str),
-        )
-        db.add(user)
+        user = db.query(User).filter(User.email == email).first()
+
+        if user:
+            # 🔗 Link cognito_sub to existing user
+            user.cognito_sub = sub
+        else:
+            # 🆕 Create user (same as before)
+            user = User(
+                cognito_sub=sub,
+                email=email,
+                full_name=payload.get("custom:full_name", email),
+                role=UserRole(role_str),
+                is_active=True,
+            )
+            db.add(user)
+
         db.commit()
         db.refresh(user)
 
     recruiter_id = None
 
-    # ---- Candidate profile auto-create ----
+    # -------------------------------------------------
+    # CANDIDATE PROFILE AUTO-CREATE (UNCHANGED)
+    # -------------------------------------------------
     if user.role == UserRole.user:
         profile = db.query(CandidateProfile).filter(
             CandidateProfile.user_id == user.id
@@ -115,7 +129,9 @@ def complete_login(
             db.add(CandidateProfile(user_id=user.id))
             db.commit()
 
-    # ---- Recruiter auto-create ----
+    # -------------------------------------------------
+    # RECRUITER AUTO-CREATE (UNCHANGED)
+    # -------------------------------------------------
     if user.role == UserRole.recruiter:
         recruiter = db.query(Recruiter).filter(
             Recruiter.user_id == user.id
@@ -145,7 +161,7 @@ def complete_login(
 
     return {
         "user_id": str(user.id),
-        "role": user.role.value,  # ✅ ALWAYS STRING
+        "role": user.role.value,
         "recruiter_id": str(recruiter_id) if recruiter_id else None,
     }
 
