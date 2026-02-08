@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from .auth_api import get_current_user
 
-from .models import Interview, Notification
+from .models import Interview, Notification,JobShare
 
 
 
@@ -241,7 +241,8 @@ def my_applications(
 
     return [
         {
-            "application_id": app.id,
+            "application_id": str(app.id),
+            "job_id": str(app.job.id),
             "job_title": app.job.title,
             "company_name": app.job.company.name if app.job.company else None,
             "status": app.status,
@@ -290,6 +291,20 @@ def view_applicants_for_job(
     if not job:
         raise HTTPException(404, "Job not found")
 
+    recruiter = user.recruiter_profile
+
+    # check owner
+    is_owner = job.recruiter_id == recruiter.id
+
+    # check shared
+    is_shared = db.query(JobShare).filter(
+        JobShare.job_id == job.id,
+        JobShare.shared_with_recruiter_id == recruiter.id
+    ).first()
+
+    if not is_owner and not is_shared:
+        raise HTTPException(403, "Not authorized to view applicants")
+
     applications = (
         db.query(Application)
         .options(
@@ -303,14 +318,11 @@ def view_applicants_for_job(
     )
 
     # =====================================================
-    # ✅ ADDED: MARK APPLICATION AS VIEWED + NOTIFICATION
+    # MARK APPLICATION AS VIEWED + NOTIFICATION
     # =====================================================
     for app in applications:
         if app.viewed_at is None:
             app.viewed_at = datetime.utcnow()
-            
-            if app.status == ApplicationStatus.applied:
-                app.status = ApplicationStatus.viewed
 
             notification = Notification(
                 user_id=app.candidate.user.id,
@@ -325,6 +337,7 @@ def view_applicants_for_job(
     return {
         "job_id": str(job.id),
         "job_title": job.title,
+        "is_shared_job": not is_owner,
         "applicants": [
             {
                 "application_id": app.id,
@@ -378,12 +391,21 @@ def update_application_status(
     if not application:
         raise HTTPException(404, "Application not found")
 
-    job = db.query(Job).filter(
-        Job.id == application.job_id,
-        Job.recruiter_id == recruiter.id,
-    ).first()
+    job = db.query(Job).filter(Job.id == application.job_id).first()
 
     if not job:
+        raise HTTPException(404, "Job not found")
+
+    # owner check
+    is_owner = job.recruiter_id == recruiter.id
+
+    # shared check
+    is_shared = db.query(JobShare).filter(
+        JobShare.job_id == job.id,
+        JobShare.shared_with_recruiter_id == recruiter.id
+    ).first()
+
+    if not is_owner and not is_shared:
         raise HTTPException(403, "Not allowed to update this application")
 
     # ---------------- VALIDATE STATUS ----------------
@@ -461,11 +483,22 @@ def reassign_application(
     recruiter = user.recruiter_profile
 
     app = db.query(Application).filter(
-        Application.id == application_id,
-        Application.assigned_recruiter_id == recruiter.id
+        Application.id == application_id
     ).first()
 
     if not app:
+        raise HTTPException(404, "Application not found")
+
+    job = db.query(Job).filter(Job.id == app.job_id).first()
+
+    is_owner = job.recruiter_id == recruiter.id
+
+    is_shared = db.query(JobShare).filter(
+        JobShare.job_id == job.id,
+        JobShare.shared_with_recruiter_id == recruiter.id
+    ).first()
+
+    if not is_owner and not is_shared:
         raise HTTPException(403, "Not authorized")
 
     app.assigned_recruiter_id = new_recruiter_id
@@ -512,6 +545,7 @@ def my_assigned_applications(
     return [
         {
             "application_id": app.id,
+            "job_id": str(app.job.id), 
             "candidate_name": app.candidate.user.full_name,
             "candidate_email": app.candidate.user.email,
             "job_title": app.job.title,
