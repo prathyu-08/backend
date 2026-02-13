@@ -8,14 +8,9 @@ from datetime import datetime
 from .auth_api import get_current_user
 
 from .models import Interview, Notification,JobShare
-
-
-
 from .db import get_db
 from .auth_api import oauth2_scheme, decode_cognito_token
-from .email_utils import send_email
-
-
+from .notification_publisher import publish_event
 from .models import (
     User,
     UserRole,
@@ -27,14 +22,7 @@ from .models import (
     JobApplicationAnswer,
     CandidateProfile
 )
-from .email_templates import (
-    job_applied,
-    application_confirmation,
-    shortlisted,
-    rejected,
-    interview,
-    offer,
-)
+
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
@@ -47,25 +35,23 @@ s3 = boto3.client(
     region_name=AWS_REGION,
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+
 )
-# =====================================================
-# 1️⃣ APPLY FOR JOB (CANDIDATE)
-# - Supports simple apply (job_id)
-# - Supports full form apply (JobApplicationFormCreate)
-# - Primary resume fallback
-# - Prevents duplicates
-# - Sends email
-# =====================================================
+
+
 @router.post("/apply")
 def apply_for_job(
-    job_id: str = Form(...),                 # job being applied
-    answers: str = Form(None),               # JSON string
-    resume_id: str = Form(None),             # ✅ existing resume (dropdown)
-    resume_file: UploadFile = File(None),    # ✅ new resume (optional)
+    job_id: str = Form(...),
+    answers: str = Form(None),
+    resume_id: str = Form(None),
+    resume_file: UploadFile = File(None),
     db: Session = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ):
     token_data = decode_cognito_token(token)
+
+    print("\n========== APPLY DEBUG START ==========")
+    print("TOKEN SUB:", token_data["sub"])
 
     # --------------------------------------------------
     # USER VALIDATION
@@ -75,137 +61,68 @@ def apply_for_job(
         User.role == UserRole.user,
     ).first()
 
+    print("USER FOUND:", user)
+
     if not user:
+        print("❌ USER NOT FOUND / NOT CANDIDATE")
         raise HTTPException(403, "Only candidates can apply")
 
+    # --------------------------------------------------
+    # CANDIDATE PROFILE
+    # --------------------------------------------------
     candidate = user.candidate_profile
+    print("CANDIDATE PROFILE:", candidate)
+
     if not candidate:
-        raise HTTPException(404, "Candidate profile not found")
+        print("⚠️ Candidate missing → creating profile")
+        candidate = CandidateProfile(user_id=user.id)
+        db.add(candidate)
+        db.commit()
+        db.refresh(candidate)
 
     # --------------------------------------------------
     # JOB VALIDATION
     # --------------------------------------------------
+    print("JOB ID RECEIVED:", job_id)
+
     job = db.query(Job).filter(
         Job.id == job_id,
         Job.is_active == True,
     ).first()
 
+    print("JOB FOUND:", job)
+
     if not job:
+        print("❌ JOB NOT FOUND / INACTIVE")
         raise HTTPException(404, "Job not found or inactive")
 
     # --------------------------------------------------
-    # DUPLICATE CHECK (UNCHANGED)
+    # RESUME VALIDATION
     # --------------------------------------------------
-    existing = db.query(Application).filter(
-        Application.job_id == job.id,
-        Application.candidate_id == candidate.id,
-    ).first()
+    print("RESUME ID RECEIVED:", resume_id)
 
-    if existing:
-        raise HTTPException(400, "You have already applied for this job")
-
-    # --------------------------------------------------
-    # RESUME REQUIRED (EITHER ID OR FILE)
-    # --------------------------------------------------
-    if not resume_id and not resume_file:
-        raise HTTPException(
-            400,
-            "Please select an existing resume or upload a new one",
-        )
-
-    # --------------------------------------------------
-    # RESUME HANDLING (EXISTING OR NEW)
-    # --------------------------------------------------
     if resume_id:
-        # ✅ Use existing resume
         resume_to_use = db.query(Resume).filter(
             Resume.id == resume_id,
             Resume.candidate_id == candidate.id,
         ).first()
 
+        print("RESUME FOUND:", resume_to_use)
+
         if not resume_to_use:
-            raise HTTPException(404, "Selected resume not found")
+            print("❌ RESUME NOT BELONG TO CANDIDATE")
+            raise HTTPException(
+                404,
+                "Selected resume not found for this candidate"
+            )
 
     else:
-        # ✅ Upload new resume
-        if not resume_file.filename.lower().endswith((".pdf", ".doc", ".docx")):
-            raise HTTPException(
-                400,
-                "Only PDF, DOC, or DOCX resumes are allowed",
-            )
+        print("⚠️ No resume_id provided")
 
-        resume_key = f"resumes/{candidate.id}/{uuid4()}_{resume_file.filename}"
+    print("========== APPLY DEBUG END ==========\n")
 
-        resume_file.file.seek(0)
-        s3.upload_fileobj(
-            resume_file.file,
-            S3_BUCKET_NAME,
-            resume_key,
-            ExtraArgs={"ContentType": resume_file.content_type},
-        )
+    return {"message": "Debug complete"}
 
-        resume_to_use = Resume(
-            candidate_id=candidate.id,
-            resume_s3_key=resume_key,
-            original_filename=resume_file.filename,
-            content_type=resume_file.content_type,
-            file_size=None,
-            is_primary=False,
-        )
-
-        db.add(resume_to_use)
-        db.commit()
-        db.refresh(resume_to_use)
-
-    # --------------------------------------------------
-    # CREATE APPLICATION (UNCHANGED STRUCTURE)
-    # --------------------------------------------------
-    application = Application(
-        job_id=job.id,
-        candidate_id=candidate.id,
-        resume_id=resume_to_use.id,   # ✅ works for both cases
-        status=ApplicationStatus.applied,
-    )
-
-    db.add(application)
-    db.commit()
-    db.refresh(application)
-
-    # --------------------------------------------------
-    # SAVE DYNAMIC ANSWERS (UNCHANGED)
-    # --------------------------------------------------
-    if answers:
-        import json
-        answers_data = json.loads(answers)
-
-        for ans in answers_data:
-            if not ans.get("answer"):
-                continue
-
-            db.add(
-                JobApplicationAnswer(
-                    application_id=application.id,
-                    question_id=ans["question_id"],
-                    answer=ans["answer"],
-                )
-            )
-
-        db.commit()
-
-    # --------------------------------------------------
-    # EMAIL CONFIRMATION (UNCHANGED)
-    # --------------------------------------------------
-    try:
-        subject, body = job_applied(job.title)
-        send_email(user.email, subject, body)
-    except Exception as e:
-        print("Email skipped:", e)
-
-    return {
-        "message": "Application submitted successfully",
-        "application_id": str(application.id),
-        "status": application.status,
-    }
 
 # =====================================================
 # 2️⃣ CANDIDATE – MY APPLICATIONS (EXTENDED)
@@ -241,8 +158,7 @@ def my_applications(
 
     return [
         {
-            "application_id": str(app.id),
-            "job_id": str(app.job.id),
+            "application_id": app.id,
             "job_title": app.job.title,
             "company_name": app.job.company.name if app.job.company else None,
             "status": app.status,
@@ -355,8 +271,9 @@ def view_applicants_for_job(
     }
 
 
+
 # =====================================================
-# 4️⃣ RECRUITER – UPDATE APPLICATION STATUS + EMAIL + NOTIFICATION
+# 4️⃣ RECRUITER – UPDATE APPLICATION STATUS (SNS ONLY)
 # =====================================================
 @router.put("/{application_id}/status")
 def update_application_status(
@@ -391,15 +308,16 @@ def update_application_status(
     if not application:
         raise HTTPException(404, "Application not found")
 
-    job = db.query(Job).filter(Job.id == application.job_id).first()
+    job = db.query(Job).filter(
+        Job.id == application.job_id
+    ).first()
 
     if not job:
         raise HTTPException(404, "Job not found")
 
-    # owner check
+    # ---------------- AUTHORIZATION ----------------
     is_owner = job.recruiter_id == recruiter.id
 
-    # shared check
     is_shared = db.query(JobShare).filter(
         JobShare.job_id == job.id,
         JobShare.shared_with_recruiter_id == recruiter.id
@@ -425,7 +343,7 @@ def update_application_status(
     db.commit()
     db.refresh(application)
 
-    # ---------------- 🔔 NOTIFICATION ----------------
+    # ---------------- 🔔 IN-APP NOTIFICATION ----------------
     from .notification_utils import create_notification
 
     create_notification(
@@ -435,34 +353,23 @@ def update_application_status(
         f"Your application for '{job.title}' is now '{status_clean}'."
     )
 
-    # ---------------- EMAIL ----------------
-    candidate_email = application.candidate.user.email
-    job_title = job.title
-
-    try:
-        if status_clean == "shortlisted":
-            send_email(candidate_email, *shortlisted(job_title))
-
-        elif status_clean == "rejected":
-            send_email(candidate_email, *rejected(job_title))
-
-        elif status_clean == "interview":
-            send_email(
-                candidate_email,
-                *interview(job_title, "Interview details will be shared soon.")
-            )
-
-        elif status_clean == "offered":
-            send_email(candidate_email, *offer(job_title))
-
-    except Exception as e:
-        # Email failure should NOT break status update
-        print("Email skipped:", e)
+    # ---------------- 🔔 SNS EVENT (REPLACED EMAIL) ----------------
+    publish_event(
+        "APPLICATION_STATUS_UPDATED",
+        {
+            "email": application.candidate.user.email,
+            "candidate_name": application.candidate.user.full_name,
+            "job_title": job.title,
+            "new_status": status_clean,
+            "previous_status": previous_status.value,
+            "application_id": str(application.id),
+        }
+    )
 
     # ---------------- RESPONSE ----------------
     return {
         "message": "Application status updated successfully",
-        "application_id": application.id,
+        "application_id": str(application.id),
         "previous_status": previous_status,
         "new_status": application.status,
     }
@@ -475,13 +382,18 @@ def reassign_application(
 ):
     payload = decode_cognito_token(token)
 
+    # ---------------- AUTH ----------------
     user = db.query(User).filter(
         User.cognito_sub == payload["sub"],
         User.role == UserRole.recruiter
     ).first()
 
+    if not user or not user.recruiter_profile:
+        raise HTTPException(403, "Recruiter only")
+
     recruiter = user.recruiter_profile
 
+    # ---------------- FETCH APPLICATION ----------------
     app = db.query(Application).filter(
         Application.id == application_id
     ).first()
@@ -489,8 +401,14 @@ def reassign_application(
     if not app:
         raise HTTPException(404, "Application not found")
 
-    job = db.query(Job).filter(Job.id == app.job_id).first()
+    job = db.query(Job).filter(
+        Job.id == app.job_id
+    ).first()
 
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    # ---------------- AUTHORIZATION ----------------
     is_owner = job.recruiter_id == recruiter.id
 
     is_shared = db.query(JobShare).filter(
@@ -501,24 +419,25 @@ def reassign_application(
     if not is_owner and not is_shared:
         raise HTTPException(403, "Not authorized")
 
+    # ---------------- REASSIGN ----------------
     app.assigned_recruiter_id = new_recruiter_id
     app.assigned_by = user.id
     app.assigned_at = datetime.utcnow()
 
-    # 📧 EMAIL
-    subject = "Application ownership updated"
-    body = f"""
-Hi,
-
-Your application is now being handled by another recruiter.
-You will be contacted soon.
-
-Regards,
-Recruitment Team
-"""
-    send_email(app.candidate.user.email, subject, body)
-
     db.commit()
+    db.refresh(app)
+
+    # ---------------- 🔔 SNS EVENT (REPLACED EMAIL) ----------------
+    publish_event(
+        "APPLICATION_REASSIGNED",
+        {
+            "email": app.candidate.user.email,
+            "candidate_name": app.candidate.user.full_name,
+            "job_title": job.title,
+            "application_id": str(app.id),
+        }
+    )
+
     return {"message": "Application reassigned successfully"}
 @router.get("/assigned")
 def my_assigned_applications(
@@ -545,7 +464,6 @@ def my_assigned_applications(
     return [
         {
             "application_id": app.id,
-            "job_id": str(app.job.id), 
             "candidate_name": app.candidate.user.full_name,
             "candidate_email": app.candidate.user.email,
             "job_title": app.job.title,
