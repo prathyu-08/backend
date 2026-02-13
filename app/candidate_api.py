@@ -18,6 +18,7 @@ from .models import (
     ProfileView,
     Resume,
     Application,
+    ApplicationStatus,
     SavedJob,
 )
 from .schemas import (
@@ -985,7 +986,7 @@ def calculate_profile_completion(profile: CandidateProfile) -> dict:
         missing.append("Education")
         suggestions.append("Add at least one education record")
 
-    # ---------------- EXPERIENCE OR FRESHER PROJECTS (20)
+    # ---------------- EXPERIENCE OR PROJECTS (20)
     if profile.experiences:
         score += 20
     elif profile.projects:
@@ -999,12 +1000,9 @@ def calculate_profile_completion(profile: CandidateProfile) -> dict:
     skill_count = len(profile.skills or [])
     if skill_count >= 3:
         score += 15
-    elif skill_count > 0:
-        score += 10
-        suggestions.append("Add at least 3 skills")
     else:
         missing.append("Skills")
-        suggestions.append("Add skills to your profile")
+        suggestions.append("Add at least 3 skills to reach 100% profile strength")
 
     # ---------------- PROJECTS (15)
     if profile.projects:
@@ -1020,16 +1018,15 @@ def calculate_profile_completion(profile: CandidateProfile) -> dict:
         missing.append("Resume")
         suggestions.append("Upload your resume")
 
-    # ---------------- PROFILE PICTURE (5)
+    # ---------------- PROFILE PICTURE (10)
     if profile.profile_picture:
         score += 10
     else:
+        missing.append("Profile picture")
         suggestions.append("Add a professional profile photo")
 
-
-
     return {
-        "percentage": score,  # already max 100
+        "percentage": score,  # max 100
         "missing_sections": missing,
         "suggestions": suggestions[:5],
         "is_complete": score == 100,
@@ -1040,7 +1037,7 @@ def calculate_profile_completion(profile: CandidateProfile) -> dict:
             "skills": 15,
             "projects": 15,
             "resume": 10,
-            "profile_picture": 10,  # shifted weight
+            "profile_picture": 10,
         },
     }
 
@@ -1064,6 +1061,7 @@ def profile_completion(
 # ANALYTICS
 # =====================================================
 
+
 @router.get(
     "/profile-analytics",
     response_model=ProfileAnalytics,
@@ -1074,62 +1072,81 @@ def get_profile_analytics(
     db: Session = Depends(get_db),
     profile: CandidateProfile = Depends(get_candidate_profile)
 ):
-    """Get profile analytics."""
+    """Get profile analytics (candidate-friendly pipeline logic)."""
     try:
-        # Profile views
+        # ---------------- PROFILE VIEWS ----------------
         total_views = db.query(ProfileView).filter(
             ProfileView.candidate_id == profile.id
         ).count()
-        
-        # Recent views (last 30 days)
+
         recent_views = db.query(func.count(ProfileView.id)).filter(
             and_(
                 ProfileView.candidate_id == profile.id,
                 ProfileView.viewed_at >= func.now() - text("INTERVAL '30 days'")
             )
         ).scalar() or 0
-        
-        # Applications
+
+        # ---------------- APPLICATION COUNTS ----------------
         total_applications = db.query(Application).filter(
             Application.candidate_id == profile.id
         ).count()
-        
-        # Application status breakdown
-        application_stats = db.query(
-            Application.status,
-            func.count(Application.id)
-        ).filter(
-            Application.candidate_id == profile.id
-        ).group_by(Application.status).all()
-        
-        # Saved jobs
+
+        shortlisted_count = db.query(Application).filter(
+            Application.candidate_id == profile.id,
+            Application.status.in_([
+                ApplicationStatus.shortlisted,
+                ApplicationStatus.interview,
+                ApplicationStatus.offered
+            ])
+        ).count()
+
+        interview_count = db.query(Application).filter(
+            Application.candidate_id == profile.id,
+            Application.status.in_([
+                ApplicationStatus.interview,
+                ApplicationStatus.offered
+            ])
+        ).count()
+
+        offered_count = db.query(Application).filter(
+            Application.candidate_id == profile.id,
+            Application.status == ApplicationStatus.offered
+        ).count()
+
+        rejected_count = db.query(Application).filter(
+            Application.candidate_id == profile.id,
+            Application.status == ApplicationStatus.rejected
+        ).count()
+
+        # ---------------- SAVED JOBS ----------------
         saved_jobs_count = db.query(SavedJob).filter(
             SavedJob.candidate_id == profile.id
         ).count()
-        
-        # Profile completion
+
+        # ---------------- PROFILE COMPLETION ----------------
         completion_data = calculate_profile_completion(profile)
-        
+
         return ProfileAnalytics(
             profile_views=total_views,
             recent_views=recent_views,
             total_applications=total_applications,
             saved_jobs=saved_jobs_count,
             application_breakdown={
-                (status.value if hasattr(status, "value") else str(status)): count
-                for status, count in application_stats
+                "applied": total_applications,
+                "shortlisted": shortlisted_count,
+                "interview": interview_count,
+                "offered": offered_count,
+                "rejected": rejected_count,
             },
             profile_completion=completion_data["percentage"],
-            profile_score=completion_data["percentage"]
+            profile_score=completion_data["percentage"],
         )
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch analytics: {str(e)}"
         )
-    
-
-
 
 
 @router.get(
