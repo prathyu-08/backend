@@ -493,6 +493,39 @@ class JobDescriptionSkill(Base):
     )
 
 
+class JobShare(Base):
+    __tablename__ = "job_shares"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    owner_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    shared_with_recruiter_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("recruiters.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "shared_with_recruiter_id",
+            name="uq_job_share",
+        ),
+    )
 
 # =====================================================
 # RESUME

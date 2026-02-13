@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 from pydantic import BaseModel, EmailStr,ConfigDict,Field
+from enum import Enum
 
 from .models import (
     UserRole,
@@ -318,6 +319,7 @@ class JobRead(JobBase):
     company_id: UUID
     is_active: bool
     created_at: datetime
+    skills: list[str] = []  
 
 
 # =====================================================
