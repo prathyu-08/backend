@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session, joinedload
 from uuid import UUID
 from typing import List, Optional
 from .db import get_db
+from .models import Interview
+from datetime import date
 from .utils.s3 import upload_profile_picture, upload_resume as upload_resume_s3, delete_file, generate_presigned_url 
 from .models import (
     User,
@@ -1126,21 +1128,46 @@ def get_profile_analytics(
         # ---------------- PROFILE COMPLETION ----------------
         completion_data = calculate_profile_completion(profile)
 
-        return ProfileAnalytics(
-            profile_views=total_views,
-            recent_views=recent_views,
-            total_applications=total_applications,
-            saved_jobs=saved_jobs_count,
-            application_breakdown={
+                # ---------------- UPCOMING INTERVIEWS ----------------
+        upcoming_interviews_query = (
+            db.query(Interview)
+            .join(Application, Interview.application_id == Application.id)
+            .filter(
+                Application.candidate_id == profile.id,
+                Interview.scheduled_at != None,
+                Interview.scheduled_at >= func.now()
+            )
+            .all()
+        )
+
+        upcoming_interviews = [
+            {
+                "job_title": interview.application.job.title
+                if interview.application and interview.application.job else "Job",
+                "date": interview.scheduled_at.strftime("%d %b %Y"),
+                "time": interview.scheduled_at.strftime("%I:%M %p"),
+            }
+            for interview in upcoming_interviews_query
+        ]
+
+
+        return {
+            "profile_views": total_views,
+            "recent_views": recent_views,
+            "total_applications": total_applications,
+            "saved_jobs": saved_jobs_count,
+            "application_breakdown": {
                 "applied": total_applications,
                 "shortlisted": shortlisted_count,
                 "interview": interview_count,
                 "offered": offered_count,
                 "rejected": rejected_count,
             },
-            profile_completion=completion_data["percentage"],
-            profile_score=completion_data["percentage"],
-        )
+            "profile_completion": completion_data["percentage"],
+            "profile_score": completion_data["percentage"],
+            "upcoming_interviews": upcoming_interviews  # ✅ THIS FIXES THE ISSUE
+        }
+
 
     except Exception as e:
         raise HTTPException(
