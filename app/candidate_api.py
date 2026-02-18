@@ -67,7 +67,7 @@ def get_candidate_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Candidate profile not found")
 
-    # ✅ GUARANTEE public_username FOR ALL
+   
     if not profile.public_username:
         base = profile.user.full_name.lower().replace(" ", "")
         candidate_username = base
@@ -868,7 +868,7 @@ def upload_resume(
             is_primary=is_primary,
         )
         db.add(resume)
-        db.flush()  # get resume.id
+        db.flush()  
 
         # 3️⃣ Upload to S3
         s3_key = upload_resume_s3(file=file)
@@ -1028,7 +1028,7 @@ def calculate_profile_completion(profile: CandidateProfile) -> dict:
         suggestions.append("Add a professional profile photo")
 
     return {
-        "percentage": score,  # max 100
+        "percentage": score,  
         "missing_sections": missing,
         "suggestions": suggestions[:5],
         "is_complete": score == 100,
@@ -1165,7 +1165,7 @@ def get_profile_analytics(
             },
             "profile_completion": completion_data["percentage"],
             "profile_score": completion_data["percentage"],
-            "upcoming_interviews": upcoming_interviews  # ✅ THIS FIXES THE ISSUE
+            "upcoming_interviews": upcoming_interviews 
         }
 
 
@@ -1205,7 +1205,7 @@ def public_profile(
 
     return {
         "full_name": profile.user.full_name,
-        "email": profile.user.email,              # ✅ ADD THIS
+        "email": profile.user.email,             
         "headline": profile.resume_headline,
         "summary": profile.profile_summary,
         "experience_years": profile.total_experience,
@@ -1248,7 +1248,7 @@ def check_username_availability(
 @router.get("/candidate/{candidate_id}")
 def get_candidate_profile_for_recruiter(
     candidate_id: UUID,
-    application_id: UUID,   # ✅ REQUIRED
+    application_id: UUID,  
     db: Session = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ):
@@ -1361,7 +1361,7 @@ def get_candidate_profile_for_recruiter(
             for p in candidate.projects
         ],
 
-        # ✅ CORRECT PLACE
+
         "resume": resume,
     }
 
@@ -1458,3 +1458,4 @@ def access_resume_for_application(
     db.commit()
 
     return {"url": url}
+
