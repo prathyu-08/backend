@@ -25,7 +25,7 @@ cognito = boto3.client(
 # =====================================================
 # DECODE COGNITO TOKEN
 # =====================================================
-_JWKS_CACHE = None  # simple in-memory cache
+_JWKS_CACHE = None  
 
 def decode_cognito_token(token: str) -> dict:
     global _JWKS_CACHE
@@ -57,7 +57,7 @@ def decode_cognito_token(token: str) -> dict:
         )
 
     except ExpiredSignatureError:
-        # 🔥 THIS is what was breaking everything
+       
         raise HTTPException(
             status_code=401,
             detail="Token expired. Please login again."
@@ -99,10 +99,10 @@ def complete_login(
         user = db.query(User).filter(User.email == email).first()
 
         if user:
-            # 🔗 Link cognito_sub to existing user
+            
             user.cognito_sub = sub
         else:
-            # 🆕 Create user (same as before)
+            
             user = User(
                 cognito_sub=sub,
                 email=email,
@@ -180,7 +180,7 @@ def forgot_password(data: dict):
             Username=email,
         )
     except Exception:
-        pass  # Do not reveal existence
+        pass  
 
     return {"message": "If the email exists, a reset code has been sent"}
 
@@ -254,3 +254,4 @@ def get_current_recruiter(
         raise HTTPException(status_code=404, detail="Recruiter profile not found")
 
     return recruiter
+
